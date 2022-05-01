@@ -3,14 +3,15 @@
 torch
 
 numpy
-torchvision
+# torchvision
 
-# Build requirements.
-pybind11
-wheel
-setuptools
-cmake
-ninja
+# # Build requirements.
+# pybind11
+# wheel
+# setuptools
+# cmake
+# ninja
+
 
 # Test Requirements
 pillow
