@@ -25,25 +25,26 @@ TORCH_TYPE_TO_ODS_TYPE = {
     "Scalar": "AnyTorchScalarType",
     "Scalar?": "AnyTorchOptionalScalarType",
     "int": "Torch_IntType",
-    "int[]": "ListOfTorchIntType",
-    "int?": "TorchOptionalIntType",
-    "int[]?": "OptionalListOfTorchIntType",
+    "int[]": "AnyTorchListOfTorchIntType",
+    "int?": "AnyTorchOptionalIntType",
+    "int[]?": "AnyTorchOptionalListOfTorchIntType",
     "bool": "Torch_BoolType",
-    "bool[]": "ListOfTorchBoolType",
-    "bool?": "TorchOptionalBoolType",
+    "bool[]": "AnyTorchListOfTorchBoolType",
+    "bool?": "AnyTorchOptionalBoolType",
     "float": "Torch_FloatType",
+    "float?": "AnyTorchOptionalFloatType",
     "t[]": "AnyTorchListType",
     "t": "AnyTorchType",
     "t1": "AnyTorchType",
     "t2": "AnyTorchType",
     "Any": "AnyTorchType",
     "Device": "Torch_DeviceType",
-    "Device?": "TorchOptionalDeviceType",
+    "Device?": "AnyTorchOptionalDeviceType",
     "Generator": "Torch_GeneratorType",
-    "Generator?": "TorchOptionalGeneratorType",
+    "Generator?": "AnyTorchOptionalGeneratorType",
     "str": "Torch_StringType",
-    "str?": "TorchOptionalStringType",
-    "str[]": "ListOfTorchStringType",
+    "str?": "AnyTorchOptionalStringType",
+    "str[]": "AnyTorchListOfTorchStringType",
     "Dict": "Torch_DictType",
     "__torch__.torch.classes.quantized.LinearPackedParamsBase": "Torch_LinearParamsType",
 }
@@ -299,6 +300,8 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit_with_mutating_variants("aten::triu : (Tensor, int) -> (Tensor)")
     emit_with_mutating_variants(
         "aten::index_put : (Tensor, Tensor?[], Tensor, bool) -> (Tensor)")
+    emit_with_mutating_variants(
+        "aten::index_put.hacked_twin : (Tensor, Tensor[], Tensor, bool) -> (Tensor)")
 
     # Non-elementwise tensor compute ops
     emit("aten::linear : (Tensor, Tensor, Tensor?) -> (Tensor)")
@@ -310,6 +313,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     )
     emit("aten::convolution : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int) -> (Tensor)")
     emit("aten::convolution_overrideable : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int) -> (Tensor)")
+    emit("aten::flip : (Tensor, int[]) -> (Tensor)")
     emit(
         "aten::native_batch_norm : (Tensor, Tensor?, Tensor?, Tensor?, Tensor?, bool, float, float) -> (Tensor, Tensor, Tensor)"
     )
@@ -330,6 +334,9 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     )
     emit(
         "aten::max_pool2d_with_indices_backward : (Tensor, Tensor, int[], int[], int[], int[], bool, Tensor) -> (Tensor)"
+    )
+    emit(
+        "aten::avg_pool2d : (Tensor, int[], int[], int[], bool, bool, int?) -> (Tensor)"
     )
     emit(
         "aten::softmax.int : (Tensor, int, int?) -> (Tensor)"
@@ -361,6 +368,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
 
     # Misc tensor ops.
     emit("aten::constant_pad_nd : (Tensor, int[], Scalar) -> (Tensor)")
+    emit("aten::pad : (Tensor, int[], str, float?) -> (Tensor)")
     emit("aten::squeeze.dim : (Tensor, int) -> (Tensor)", has_folder=True)
     emit("aten::unsqueeze : (Tensor, int) -> (Tensor)")
     emit("aten::squeeze : (Tensor) -> (Tensor)", has_folder=True)
@@ -417,6 +425,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::max : (Tensor) -> (Tensor)")
     emit("aten::max.dim : (Tensor, int, bool) -> (Tensor, Tensor)")
     emit("aten::to.dtype : (Tensor, int, bool, bool, int?) -> (Tensor)", has_folder=True)
+    emit("aten::to.dtype_layout : (Tensor, int?, int?, Device?, bool?, bool, bool, int?) -> (Tensor)", has_folder=True)
     emit("aten::to.other : (Tensor, Tensor, bool, bool, int?) -> (Tensor)")
     emit("aten::to.prim_Device : (Tensor, Device?, int?, bool, bool) -> (Tensor)")
     emit("aten::type_as : (Tensor, Tensor) -> (Tensor)")
@@ -434,7 +443,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::tensor.float : (float, int?, Device?, bool) -> (Tensor)")
     emit("aten::Int.Tensor : (Tensor) -> (int)", has_folder=True)
     emit("aten::Float.Tensor : (Tensor) -> (float)", has_folder=True)
-    emit("aten::dropout : (Tensor, float, bool) -> (Tensor)")
+    emit_with_mutating_variants("aten::dropout : (Tensor, float, bool) -> (Tensor)")
     emit("aten::t : (Tensor) -> (Tensor)")
     emit("aten::full : (int[], Scalar, int?, int?, Device?, bool?) -> (Tensor)")
     emit("aten::full_like : (Tensor, Scalar, int?, int?, Device?, bool?, int?) -> (Tensor)")
@@ -468,6 +477,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::Float.Scalar : (Scalar) -> (float)", has_folder=True)
     emit("aten::Float.str : (str) -> (float)")
     emit("aten::Int.float : (float) -> (int)")
+    emit("aten::Int.Scalar : (Scalar) -> (int)", has_folder=True)
 
     # Primitive ops
     emit("aten::__range_length : (int, int, int) -> (int)", has_folder=True)
@@ -488,11 +498,16 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::add.float_int : (float, int) -> (float)")
     emit("aten::sub.float : (float, float) -> (float)")
     emit("aten::mul.float : (float, float) -> (float)")
+    emit("aten::div.float : (float, float) -> (float)", has_folder=True)
     emit("aten::neg.float : (float) -> (float)")
     emit("aten::eq.float : (float, float) -> (bool)", has_folder=True)
     emit("aten::gt.float : (float, float) -> (bool)", has_folder=True)
+    emit("aten::ge.float : (float, float) -> (bool)", has_folder=True)
     emit("aten::lt.float : (float, float) -> (bool)", has_folder=True)
     emit("aten::lt.float_int : (float, int) -> (bool)")
+    emit("aten::ge.float_int : (float, int) -> (bool)")
+    emit("aten::ne.float_int : (float, int) -> (bool)")
+    emit("aten::gt.float_int : (float, int) -> (bool)")
     emit("aten::__and__.bool : (bool, bool) -> (bool)")
     emit("aten::ne.bool : (bool, bool) -> (bool)", has_folder=True)
     emit("aten::__is__ : (t1, t2) -> (bool)", has_folder=True)
@@ -504,7 +519,11 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::__getitem__.t : (t[], int) -> (t)", has_canonicalizer=True)
     emit("aten::_set_item.t : (t[], int, t) -> (t[])")
     emit("aten::div : (Scalar, Scalar) -> (float)")
+    emit("aten::add : (Scalar, Scalar) -> (Scalar)")
+
     emit("aten::eq.device : (Device, Device) -> (bool)")
+    emit("aten::ceil.float : (float) -> (int)", has_folder=True)
+    emit("aten::ScalarImplicit : (Tensor) -> (Scalar)")
 
     # backprop ops
     emit("aten::_softmax_backward_data : (Tensor, Tensor, int, int) -> (Tensor)")
@@ -533,6 +552,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
          traits=["DeclareOpInterfaceMethods<CastOpInterface>"])
     emit("prim::Print : (...) -> ()")
     emit("prim::tolist : (...) -> (...)")
+    emit("prim::abs.Scalar : (Scalar) -> (Scalar)")
 
     # ==========================================================================
     # `quantized::` namespace.

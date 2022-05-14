@@ -32,11 +32,12 @@ static bool isViewLikeOp(Operation *op) {
   // correct. We could potentially be more precise and identify the cases
   // that it does not return a view and treat those as having value
   // semantics.
-  return isa<AtenBroadcastToOp, AtenContiguousOp, AtenExpandAsOp, AtenExpandOp,
-             AtenFlattenUsingIntsOp, AtenPermuteOp, AtenReshapeOp, Aten_ReshapeAliasOp,
-             AtenSelectIntOp, AtenSliceTensorOp, AtenSqueezeDimOp,
-             AtenSqueezeOp, AtenTOp, AtenToDtypeOp, AtenTransposeIntOp,
-             AtenUnsqueezeOp, AtenViewOp, TensorStaticInfoCastOp>(op);
+  return isa<AtenBroadcastToOp, AtenContiguousOp, AtenDetachOp, AtenExpandAsOp,
+             AtenExpandOp, AtenFlattenUsingIntsOp, AtenPermuteOp, AtenReshapeOp,
+             Aten_ReshapeAliasOp, AtenSelectIntOp, AtenSliceTensorOp,
+             AtenSqueezeDimOp, AtenSqueezeOp, AtenTOp, AtenToDtypeOp,
+             AtenTransposeIntOp, AtenUnsqueezeOp, AtenViewOp,
+             TensorStaticInfoCastOp, AtenToDtypeLayoutOp>(op);
 }
 
 namespace {
@@ -107,8 +108,9 @@ public:
         result.returnOp = returnOp;
       } else {
         return rewriter.notifyMatchFailure(
-            copyToNonValueTensor,
-            "unsupported op encountered during abstract analysis");
+            copyToNonValueTensor, "unsupported op `" +
+                                      user->getName().getStringRef() +
+                                      "` encountered during abstract analysis");
       }
     }
     return result;

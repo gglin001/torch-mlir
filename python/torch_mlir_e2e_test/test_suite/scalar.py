@@ -11,7 +11,9 @@ from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
 
 # ==============================================================================
 
+
 class AddIntModule(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
 
@@ -22,16 +24,19 @@ class AddIntModule(torch.nn.Module):
         ([], torch.int64, True),
     ])
     def forward(self, lhs, rhs):
-        return int(lhs)+int(rhs)
+        return int(lhs) + int(rhs)
 
 
 @register_test_case(module_factory=lambda: AddIntModule())
 def AddIntModule_basic(module, tu: TestUtils):
-    module.forward(torch.randint(-100, 100,()), torch.randint(-100, 100,()))
+    module.forward(torch.randint(-100, 100, ()), torch.randint(-100, 100, ()))
+
 
 # ==============================================================================
 
+
 class SubIntModule(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
 
@@ -42,16 +47,19 @@ class SubIntModule(torch.nn.Module):
         ([], torch.int64, True),
     ])
     def forward(self, lhs, rhs):
-        return int(lhs)-int(rhs)
+        return int(lhs) - int(rhs)
 
 
 @register_test_case(module_factory=lambda: SubIntModule())
 def SubIntModule_basic(module, tu: TestUtils):
-    module.forward(torch.randint(-100, 100,()), torch.randint(-100, 100,()))
+    module.forward(torch.randint(-100, 100, ()), torch.randint(-100, 100, ()))
+
 
 # ==============================================================================
 
+
 class SubFloatModule(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
 
@@ -62,16 +70,19 @@ class SubFloatModule(torch.nn.Module):
         ([], torch.float64, True),
     ])
     def forward(self, lhs, rhs):
-        return float(lhs)-float(rhs)
+        return float(lhs) - float(rhs)
 
 
 @register_test_case(module_factory=lambda: SubFloatModule())
 def SubFloatModule_basic(module, tu: TestUtils):
     module.forward(torch.rand(()).double(), torch.rand(()).double())
 
+
 # ==============================================================================
 
+
 class MulIntModule(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
 
@@ -82,11 +93,61 @@ class MulIntModule(torch.nn.Module):
         ([], torch.int64, True),
     ])
     def forward(self, lhs, rhs):
-        return int(lhs)*int(rhs)
+        return int(lhs) * int(rhs)
 
 
 @register_test_case(module_factory=lambda: MulIntModule())
 def MulIntModule_basic(module, tu: TestUtils):
-    module.forward(torch.randint(-100, 100,()), torch.randint(-100, 100,()))
+    module.forward(torch.randint(-100, 100, ()), torch.randint(-100, 100, ()))
+
 
 # ==============================================================================
+
+
+class DivFloatModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([], torch.float64, True),
+        ([], torch.float64, True),
+    ])
+    def forward(self, lhs, rhs):
+        return float(lhs) / float(rhs)
+
+
+@register_test_case(module_factory=lambda: DivFloatModule())
+def DivFloatModule_basic(module, tu: TestUtils):
+    module.forward(torch.rand(()).double(), torch.rand(()).double())
+
+
+# ==============================================================================
+
+
+class CeilFloatModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([], torch.float64, True),
+        ([], torch.float64, True),
+    ])
+    def forward(self, lhs, rhs):
+        sub = float(lhs) - float(rhs)
+        # Cast the result to int to make e2e test baseline result to be an int.
+        # Without the cast, baseline result is a Tensor which is unexpected see
+        # https://github.com/llvm/torch-mlir/issues/842
+        # TODO: Investigate the root cause of baseline returning a Tensor
+        # without the int cast and remove the cast.
+        return int(torch.ops.aten.ceil(float(sub)))
+
+
+@register_test_case(module_factory=lambda: CeilFloatModule())
+def CeilFloatModule_basic(module, tu: TestUtils):
+    module.forward(torch.rand(()).double(), torch.rand(()).double())

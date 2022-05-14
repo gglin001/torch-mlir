@@ -894,6 +894,18 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
                                           threshold);
     return b.create<arith::SelectOp>(loc, predicate, constantZero, grad);
   }
+  if (auto maskedFill = dyn_cast<AtenMaskedFillScalarOp>(op)) {
+    AtenMaskedFillScalarOp::Adaptor adaptor(operands);
+    Type dtype = converter->convertType(maskedFill.getType())
+                     .cast<RankedTensorType>()
+                     .getElementType();
+
+    Value input = payloadArgs[0];
+    Value mask = payloadArgs[1];
+    Value fillValue = convertScalarToDtype(b, loc, adaptor.value(), dtype);
+
+    return b.create<arith::SelectOp>(loc, mask, fillValue, input);
+  }
 
   op->emitError("unimplemented lowering in "
                 "createLinalgPayloadCalculationForElementwiseOp");
@@ -939,7 +951,7 @@ public:
              AtenWhereSelfOp, AtenCeilOp, AtenGtTensorOp, AtenEqTensorOp,
              AtenLtTensorOp, AtenSubScalarOp, AtenAddScalarOp, AtenThresholdOp,
              AtenThresholdBackwardOp, AtenCloneOp, AtenSinOp, AtenCosOp,
-             AtenNeScalarOp, AtenNegOp>(op))
+             AtenNeScalarOp, AtenNegOp, AtenMaskedFillScalarOp>(op))
       return rewriter.notifyMatchFailure(op, "not a supported elementwise op");
 
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
@@ -1626,6 +1638,24 @@ public:
 } // namespace
 
 namespace {
+class ConvertAtenDetachOp : public OpConversionPattern<AtenDetachOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenDetachOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
+      return failure();
+
+    Type resultType = getTypeConverter()->convertType(op.getType());
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, adaptor.self());
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 class ConvertTensorStaticInfoCastOp
     : public OpConversionPattern<TensorStaticInfoCastOp> {
 public:
@@ -1657,9 +1687,11 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
       AtenGtScalarOp, AtenGeScalarOp, AtenEqScalarOp, AtenLtScalarOp,
       AtenLeScalarOp, AtenWhereSelfOp, AtenGtTensorOp, AtenEqTensorOp,
       AtenLtTensorOp, AtenThresholdOp, AtenThresholdBackwardOp, AtenCloneOp,
-      AtenSinOp, AtenCosOp, AtenNeScalarOp>();
+      AtenSinOp, AtenCosOp, AtenNeScalarOp, AtenMaskedFillScalarOp>();
   patterns.add<ConvertElementwiseOp>(typeConverter, context);
   target.addIllegalOp<AtenNllLossForwardOp>();
+  patterns.add<ConvertAtenDetachOp>(typeConverter, context);
+  target.addIllegalOp<AtenDetachOp>();
   patterns.add<ConvertAtenNllLossForwardOp>(typeConverter, context);
   target.addIllegalOp<AtenBatchNormOp>();
   patterns.add<ConvertAtenBatchNormOp>(typeConverter, context);

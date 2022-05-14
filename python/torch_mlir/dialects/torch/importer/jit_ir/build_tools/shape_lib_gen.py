@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 # Also available under a BSD-style license. See LICENSE.
 
+import string
 from typing import List, Optional, Any, Tuple, Union
 
 import os
@@ -324,6 +325,9 @@ def aten〇neg(self: List[int]) -> List[int]:
 def aten〇floor(self: List[int]) -> List[int]:
     return upstream_shape_helpers.unary(self)
 
+def aten〇detach(self: List[int]) -> List[int]:
+    return upstream_shape_helpers.unary(self)
+
 def aten〇log2(self: List[int]) -> List[int]:
     return upstream_shape_helpers.unary(self)
 
@@ -371,6 +375,9 @@ def aten〇rsub〇Scalar(self: List[int], other: float, alpha: float = 1) -> Lis
 
 def aten〇to〇dtype(self: List[int], dtype: int, non_blocking: bool = False, copy: bool = False, memory_format: Optional[int] = None) -> List[int]:
     return upstream_shape_helpers.unary(self)
+
+def aten〇to〇dtype_layout(self: List[int], dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None, non_blocking: bool = False, copy: bool = False, memory_format: Optional[int] = None) -> List[int]:
+    return self
 
 def aten〇to〇other(self: List[int], other: List[int], non_blocking: bool = False, copy: bool = False, memory_format: Optional[int] = None) -> List[int]:
     return upstream_shape_helpers.unary(self)
@@ -573,6 +580,9 @@ def aten〇max_pool2d_with_indices(self: List[int], kernel_size: List[int], stri
 def aten〇max_pool2d_with_indices_backward(grad_output: List[int], self: List[int], kernel_size: List[int], stride: List[int], padding: List[int], dilation: List[int], ceil_mode: bool, indices: List[int]) -> List[int]:
     return self
 
+def aten〇avg_pool2d(self: List[int], kernel_size: List[int], stride: List[int] = (), padding: List[int] = (0, 0), ceil_mode: bool = False, count_include_pad: bool = True, divisor_override: Optional[int] = None) -> List[int]:
+    return upstream_shape_helpers.avg_pool2d(self, kernel_size, stride, padding, ceil_mode, count_include_pad, divisor_override)
+
 def aten〇adaptive_avg_pool2d(self: List[int], output_size: List[int]) -> List[int]:
     return upstream_shape_helpers.adaptive_avg_pool2d(self, output_size)
 
@@ -621,6 +631,9 @@ def aten〇new_empty(self: List[int], size: List[int], dtype: Optional[int] = No
 def aten〇_to_copy(self: List[int], dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None, non_blocking: bool = False, memory_format: Optional[int] = None) -> List[int]:
     return upstream_shape_helpers.unary(self)
 
+def aten〇masked_fill〇Scalar(self: List[int], mask: List[int], value: float) -> List[int]:
+    return upstream_shape_helpers.unary(self)
+
 @not_present_in_registry
 def aten〇zero(self: List[int]) -> List[int]:
     return self
@@ -650,6 +663,9 @@ def aten〇index_put_impl(self: List[int], indices: List[Optional[List[int]]], v
     return upstream_shape_helpers.unary(self)
 
 def aten〇bernoulli(self: List[int], generator: Any = None) -> List[int]:
+    return self
+
+def aten〇rand_like(self: List[int], dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None, memory_format: Optional[int] = None) -> List[int]:
     return self
 
 def aten〇arange〇start_step(start: float, end: float, step: float, dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None) -> List[int]:
@@ -774,6 +790,9 @@ def aten〇conv2d(input: List[int], weight: List[int], bias: Optional[List[int]]
 
 def aten〇convolution(input: List[int], weight: List[int], bias: Optional[List[int]], stride: List[int], padding: List[int], dilation: List[int], transposed: bool, output_padding: List[int], groups: int) -> List[int]:
     return upstream_shape_helpers.conv_output_size(input, weight, bias, stride, padding, dilation, groups)
+    
+def aten〇flip(self: List[int], dims: List[int]) -> List[int]:
+    return self
 
 def aten〇batch_norm(input: List[int], weight: Optional[List[int]], bias: Optional[List[int]], running_mean: Optional[List[int]], running_var: Optional[List[int]], training: bool, momentum: float, eps: float, cudnn_enabled: bool) -> List[int]:
     # Torch's symbolic shape analysis is a bit looser about optional
@@ -794,6 +813,9 @@ def aten〇index_select(self: List[int], dim: int, index: List[int]) -> List[int
     return upstream_shape_helpers.index_select(self, dim, index)
 
 def aten〇index_put(self: List[int], indices: List[Optional[List[int]]], values: List[int], accumulate: bool = False) -> List[int]:
+    return upstream_shape_helpers.unary(self)
+
+def aten〇index_put〇hacked_twin(self: List[int], indices: List[List[int]], values: List[int], accumulate: bool = False) -> List[int]:
     return upstream_shape_helpers.unary(self)
 
 def aten〇embedding(weight: List[int], indices: List[int], padding_idx: int = -1, scale_grad_by_freq: bool = False, sparse: bool = False) -> List[int]:
@@ -857,13 +879,10 @@ def aten〇native_batch_norm(input: List[int], weight: Optional[List[int]], bias
     ErrorInvocation(TensorOfShape(2), [1]), # Unpaired pad value.
 ])
 def aten〇constant_pad_nd(self: List[int], pad: List[int], value: float = 0) -> List[int]:
-    assert len(pad) % 2 == 0, "Must have paired low-high pad amount values"
-    assert len(pad) // 2 <= len(self), "Number of padded dimensions must be less than or equal to the input dimension"
-    # The `pad` list takes the form of Low-high pairs starting at the
-    # *rightmost* dimension of `self`.
-    for i in range(len(pad) // 2):
-        self[-(i + 1)] += pad[2 * i] + pad[2 * i + 1]
-    return self
+    return upstream_shape_helpers.pad(self, pad)
+
+def aten〇pad(self: List[int], pad: List[int], mode: str = "constant", value: Optional[float] = None) -> List[int]:
+    return upstream_shape_helpers.pad(self, pad)
 
 @check_shape_function([
     Invocation(TensorOfShape(2), [LongTensorOfShape(4)]), # Basic case.

@@ -15,7 +15,6 @@ COMMON_TORCH_MLIR_LOWERING_XFAILS = {
     "ConvolutionModule1D_basic",
     "MaxPool2dWith3dInputModule_basic",
     "MaxPool2dWithIndicesWith3dInputModule_basic",
-    "ConstantPad2dStaticModule_basic",
 }
 
 def register_all_tests():
@@ -52,3 +51,5 @@ def register_all_tests():
     from . import index_put
     from . import pooling
     from . import return_types
+    from . import control_flow
+    from . import stats

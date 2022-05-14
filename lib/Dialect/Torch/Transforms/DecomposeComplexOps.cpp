@@ -13,6 +13,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
+#include "torch-mlir/Dialect/Torch/IR/TorchTypes.h"
 #include "torch-mlir/Dialect/Torch/Transforms/Passes.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "llvm/ADT/StringExtras.h"
@@ -20,6 +21,18 @@
 using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
+
+// Helper function to check whether the `dtype` is None or Float type.
+static bool isNoneOrFloatDtype(MLIRContext *context, Value dtype) {
+  if (dtype.getType().isa<Torch::NoneType>())
+    return true;
+  int64_t dtypeInt;
+  if (!matchPattern(dtype, m_TorchConstantInt(&dtypeInt)))
+    return false;
+  Type resDtype =
+      getTypeForScalarType(context, (torch_upstream::ScalarType)dtypeInt);
+  return resDtype.isa<mlir::FloatType>();
+}
 
 // Helper function to compute the return type of the reduction function.
 // `dim` specifies the dimension to reduce and `keepDim` preserves the rank of
@@ -839,6 +852,54 @@ public:
 };
 } // namespace
 
+// productDimSize = product(size(dim) for dim in dims)
+// aten.mean(x, dims) = aten.sum(x, dims) / productDimSize.
+namespace {
+class DecomposeAtenMeanDimOp : public OpRewritePattern<AtenMeanDimOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenMeanDimOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value input = op.self();
+    Value dimList = op.dim();
+    Value keepDim = op.keepdim();
+    Value dtype = op.dtype();
+    Type outputType = op.getType();
+    MLIRContext *context = op.getContext();
+
+    BaseTensorType inputType = input.getType().cast<BaseTensorType>();
+    if (!inputType.hasDtype() || !inputType.getDtype().isa<mlir::FloatType>() ||
+        !isNoneOrFloatDtype(context, dtype)) {
+      return rewriter.notifyMatchFailure(
+          op, "only floating-point type is supported");
+    }
+
+    auto dimListConstruct = dimList.getDefiningOp<PrimListConstructOp>();
+    if (!dimListConstruct) {
+      return rewriter.notifyMatchFailure(
+          op, "expect dimList to be constructed from list construct");
+    }
+
+    // Compute sum along dimensions specified in `dimList`.
+    Value sumAlongDims = rewriter.create<AtenSumDimIntListOp>(
+        loc, outputType, input, dimList, keepDim, dtype);
+
+    // `productDimSize` is product of sizes of dimensions to be reduced.
+    Value productDimSize = rewriter.create<Torch::ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr(1));
+    for (Value dim : dimListConstruct.elements()) {
+      Value dimSize = rewriter.create<AtenSizeIntOp>(loc, input, dim);
+      productDimSize =
+          rewriter.create<AtenMulIntOp>(loc, productDimSize, dimSize);
+    }
+    rewriter.replaceOpWithNewOp<AtenDivScalarOp>(op, outputType, sumAlongDims,
+                                                 productDimSize);
+    return success();
+  }
+};
+} // namespace
+
 namespace {
 class DecomposeAtenSquareOp : public OpRewritePattern<AtenSquareOp> {
 public:
@@ -1055,42 +1116,26 @@ public:
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value input = op.self();
+    Type resultType = op.getType();
     auto inputType = input.getType().cast<BaseTensorType>();
-    if (!inputType.hasDtype() || !inputType.getDtype().isa<mlir::FloatType>())
+    if (!inputType.hasDtype() || !inputType.getDtype().isa<mlir::FloatType>()) {
       return rewriter.notifyMatchFailure(op,
                                          "only support floating-point type");
-
-    // TODO: Add support for layout, pin_memory and memory_format features.
-    // Only `none` layout is supported.
-    if (!op.layout().getType().isa<Torch::NoneType>())
-      return rewriter.notifyMatchFailure(
-          op, "unimplemented: only default layout is supported");
-
-    // The pin_memory should be either `none` or constant `False`.
-    if (!op.pin_memory().getType().isa<Torch::NoneType>()) {
-      bool pinMemory;
-      if (!matchPattern(op.pin_memory(), m_TorchConstantBool(&pinMemory)))
-        return rewriter.notifyMatchFailure(
-            op, "unimplemented: pin_memory must be a constant");
-      else if (pinMemory)
-        return rewriter.notifyMatchFailure(
-            op, "unimplemented: pin_memory is expected to be false");
     }
 
-    // Only `none` memory_format is supported.
-    if (!op.memory_format().getType().isa<Torch::NoneType>())
-      return rewriter.notifyMatchFailure(
-          op, "unimplemented: only default memory format is supported");
-
-    // Create a uniform random op with low and high set to 0.0 and 1.0
+    // Create a uniform random op with low and high set to 0.0 and 1.0,
     // respectively.
     Value none = rewriter.create<ConstantNoneOp>(loc);
-    Value lb =
+    Value zero =
         rewriter.create<ConstantFloatOp>(loc, rewriter.getF64FloatAttr(0.0));
-    Value ub =
+    Value one =
         rewriter.create<ConstantFloatOp>(loc, rewriter.getF64FloatAttr(1.0));
+    Value emptyTensor = rewriter.create<AtenEmptyLikeOp>(
+        loc, resultType, input, op.dtype(), op.layout(), op.device(),
+        op.pin_memory(), op.memory_format());
     rewriter.replaceOpWithNewOp<ValsemVariantAtenUniformOp>(
-        op, op.getType(), input, lb, ub, /*generator=*/none);
+        op, resultType, emptyTensor, /*from=*/zero, /*to=*/one,
+        /*generator=*/none);
     return success();
   }
 };
@@ -1647,6 +1692,90 @@ class DecomposeAtenNewEmptyOp : public OpRewritePattern<AtenNewEmptyOp> {
 } // namespace
 
 namespace {
+// Decompose `aten.index_put.hacked_twin` op into `valsem.aten.index_put_impl`
+// op.
+class DecomposeAtenIndexPutHackedTwinOp
+    : public OpRewritePattern<AtenIndexPutHackedTwinOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenIndexPutHackedTwinOp op,
+                                PatternRewriter &rewriter) const override {
+    Value cstFalse = rewriter.create<Torch::ConstantBoolOp>(op.getLoc(), false);
+    rewriter.replaceOpWithNewOp<ValsemVariantAtenIndexPutImplOp>(
+        op, op.getType(), op.self(), op.indices(), op.values(), op.accumulate(),
+        /*unsafe=*/cstFalse);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+// Decompose `aten.pad` op into `aten.constant_pad_nd` op.
+class DecomposeAtenPadOp : public OpRewritePattern<AtenPadOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenPadOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Value value = op.value();
+    if (value.getType().isa<Torch::OptionalType>())
+      return rewriter.notifyMatchFailure(op, "optional type not supported");
+    if (value.getType().isa<Torch::NoneType>())
+      value = rewriter.create<Torch::ConstantFloatOp>(
+          op.getLoc(), rewriter.getF64FloatAttr(0));
+
+    rewriter.replaceOpWithNewOp<AtenConstantPadNdOp>(
+        op, op.getType(), op.self(), op.pad(), value);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+// Decompose `aten.to.dtype_layout` op into `aten.to.dtype` op.
+class DecomposeAtenToDtypeLayoutOp
+    : public OpRewritePattern<AtenToDtypeLayoutOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenToDtypeLayoutOp op,
+                                PatternRewriter &rewriter) const override {
+    // TODO: Add support for pin_memory arg equal to `True`.
+    if (!op.pin_memory().getType().isa<Torch::NoneType>()) {
+      bool pinMemory;
+      if (!matchPattern(op.pin_memory(), m_TorchConstantBool(&pinMemory)))
+        return rewriter.notifyMatchFailure(
+            op, "unimplemented: pin_memory must be a constant");
+      else if (pinMemory)
+        return rewriter.notifyMatchFailure(
+            op, "unimplemented: pin_memory is expected to be false");
+    }
+
+    // TODO: Add support for non-None device arg.
+    if (!op.device().getType().isa<Torch::NoneType>()) {
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: device arg must be None");
+    }
+
+    // TODO: Add support for non-strided layout.
+    // torch.layout is by default strided i.e. 0.
+    if (!op.layout().getType().isa<Torch::NoneType>()) {
+      int64_t tensorLayout;
+      if (!matchPattern(op.layout(), m_TorchConstantInt(&tensorLayout)))
+        return rewriter.notifyMatchFailure(
+            op, "unimplemented: layout must be a constant");
+      else if (tensorLayout != torch_upstream::Layout::Strided)
+        return rewriter.notifyMatchFailure(
+            op, "unimplemented: layout is expected to be strided");
+    }
+
+    rewriter.replaceOpWithNewOp<AtenToDtypeOp>(op, op.getType(), op.self(),
+                                               op.dtype(), op.non_blocking(),
+                                               op.copy(), op.memory_format());
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 class DecomposeComplexOpsPass
     : public DecomposeComplexOpsBase<DecomposeComplexOpsPass> {
   void runOnOperation() override {
@@ -1691,6 +1820,8 @@ class DecomposeComplexOpsPass
     target.addIllegalOp<AtenAddmmOp>();
     patterns.add<DecomposeAtenMeanOp>(context);
     target.addIllegalOp<AtenMeanOp>();
+    patterns.add<DecomposeAtenMeanDimOp>(context);
+    target.addIllegalOp<AtenMeanDimOp>();
     patterns.add<DecomposeAtenSelectIntOp>(context);
     target.addIllegalOp<AtenSelectIntOp>();
     patterns.add<DecomposeAtenMatmulOp>(context);
@@ -1773,6 +1904,12 @@ class DecomposeComplexOpsPass
     target.addIllegalOp<AtenDropoutOp>();
     target.addIllegalOp<AtenNewEmptyOp>();
     patterns.add<DecomposeAtenNewEmptyOp>(context);
+    patterns.add<DecomposeAtenIndexPutHackedTwinOp>(context);
+    target.addIllegalOp<AtenIndexPutHackedTwinOp>();
+    target.addIllegalOp<AtenPadOp>();
+    patterns.add<DecomposeAtenPadOp>(context);
+    patterns.add<DecomposeAtenToDtypeLayoutOp>(context);
+    target.addIllegalOp<AtenToDtypeLayoutOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {

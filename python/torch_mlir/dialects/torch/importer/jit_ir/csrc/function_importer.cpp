@@ -57,15 +57,20 @@ MlirOperation torch_mlir::importJitFunctionAsFuncOp(
        i++) {
     resultTypes.push_back(mlirFunctionTypeGetResult(functionType, i));
   }
+  std::vector<MlirType> inputTypes;
+  for (int i = 0, e = mlirFunctionTypeGetNumInputs(functionType); i != e; i++) {
+    inputTypes.push_back(mlirFunctionTypeGetInput(functionType, i));
+  }
   auto createTerminator = [&](c10::ArrayRef<MlirValue> yieldedValues,
                               MlirBlock appendToBlock) {
-    createMlirOperationAtEnd(
-        appendToBlock, "func.return", loc,
-        derefineValues(yieldedValues, resultTypes, loc, appendToBlock));
+    createMlirOperationAtEnd(appendToBlock, "func.return", loc,
+                             adjustStaticInformationForValues(
+                                 appendToBlock, loc, yieldedValues, resultTypes,
+                                 /*userAllowsRefinement=*/false));
   };
   MlirBlock block = importBlock(
       context, torch::jit::toGraphFunction(*function).graph()->block(),
-      createTerminator);
+      createTerminator, inputTypes);
   mlirRegionAppendOwnedBlock(bodyRegion, block);
   return func;
 }

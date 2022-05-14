@@ -94,6 +94,10 @@ static IntegerAttr getI64IntegerAttr(MLIRContext *context, int64_t value) {
   return IntegerAttr::get(IntegerType::get(context, 64), value);
 }
 
+static FloatAttr getF64FloatAttr(MLIRContext *context, double value) {
+  return FloatAttr::get(Float64Type::get(context), value);
+}
+
 //===----------------------------------------------------------------------===//
 // MethodOp
 //===----------------------------------------------------------------------===//
@@ -643,6 +647,67 @@ OpFoldResult AtenToDtypeOp::fold(ArrayRef<Attribute> operands) {
 }
 
 //===----------------------------------------------------------------------===//
+// AtenToDtypeLayoutOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenToDtypeLayoutOp::fold(ArrayRef<Attribute> operands) {
+  // The pin_memory arg should be either constant `False` or `none`.
+  if (!pin_memory().getType().isa<Torch::NoneType>()) {
+    bool pinMemory;
+    if (!matchPattern(pin_memory(), m_TorchConstantBool(&pinMemory)))
+      return nullptr;
+    else if (pinMemory)
+      return nullptr;
+  }
+
+  // The non_blocking arg should be constant `False`.
+  bool nonBlocking;
+  if (!matchPattern(non_blocking(), m_TorchConstantBool(&nonBlocking)))
+    return nullptr;
+  else if (nonBlocking)
+    return nullptr;
+
+  // The copy arg should be constant `False`.
+  bool copyArg;
+  if (!matchPattern(copy(), m_TorchConstantBool(&copyArg)))
+    return nullptr;
+  else if (copyArg)
+    return nullptr;
+
+  // The device arg must be `none`.
+  if (!device().getType().isa<Torch::NoneType>())
+    return nullptr;
+
+  // The memory_format arg must be `none`.
+  if (!memory_format().getType().isa<Torch::NoneType>())
+    return nullptr;
+
+  auto inputType = self().getType().cast<BaseTensorType>();
+  auto resType = getType().cast<BaseTensorType>();
+  // If the types aren't equal, then we can't fold.
+  if (inputType != resType)
+    return nullptr;
+  // If the type does not have a statically known dtype, then we cannot fold.
+  // For example, folding `tensor<*,unk>` to `tensor<*,unk>` would be wrong,
+  // since the `unk` could be dynamically different for the operand and result.
+  if (!inputType.hasDtype())
+    return nullptr;
+
+  // The layout arg should be either `none` or `0` i.e. strided.
+  if (!layout().getType().isa<Torch::NoneType>()) {
+    int64_t tensorLayout;
+    if (!matchPattern(layout(), m_TorchConstantInt(&tensorLayout)))
+      return nullptr;
+    else if (tensorLayout != torch_upstream::Layout::Strided)
+      return nullptr;
+  }
+
+  // Fold when both the input tensor and result are of the same type and the
+  // layout arg is strided.
+  return getOperand(0);
+}
+
+//===----------------------------------------------------------------------===//
 // AtenViewOp
 //===----------------------------------------------------------------------===//
 
@@ -793,6 +858,15 @@ OpFoldResult AtenGtFloatOp::fold(ArrayRef<Attribute> operands) {
 }
 
 //===----------------------------------------------------------------------===//
+// AtenGeFloatOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenGeFloatOp::fold(ArrayRef<Attribute> operands) {
+  return floatComparatorFoldHelper(*this,
+                                   [](double a, double b) { return a >= b; });
+}
+
+//===----------------------------------------------------------------------===//
 // AtenEqFloatOp
 //===----------------------------------------------------------------------===//
 
@@ -940,6 +1014,23 @@ OpFoldResult AtenFloatScalarOp::fold(ArrayRef<Attribute> operands) {
         static_cast<double>(integerAttr.getValue().getSExtValue()));
   }
   // If the input is float type already, the op is an identity.
+  if (getType() == getOperand().getType())
+    return getOperand();
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// AtenIntScalarOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenIntScalarOp::fold(ArrayRef<Attribute> operands) {
+  // Constant fold float -> int conversion.
+  if (auto floatAttr = operands[0].dyn_cast_or_null<FloatAttr>()) {
+    return IntegerAttr::get(
+        mlir::IntegerType::get(getContext(), 64, IntegerType::Signed),
+        static_cast<long>(floatAttr.getValue().convertToDouble()));
+  }
+  // If the input is int type already, the op is an identity.
   if (getType() == getOperand().getType())
     return getOperand();
   return nullptr;
@@ -1323,6 +1414,13 @@ void PrimTupleIndexOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
     if (i >= (int64_t)tupleConstruct.elements().size())
       return failure();
 
+    Value element = tupleConstruct.elements()[i];
+    // TODO: We should have a clear picture of whether we want to consistently
+    // allow refinement, and where. It seems desirable to require precise
+    // type equality for TupleConstruct / TupleIndex, but that might break
+    // things.
+    if (element.getType() != op.getType())
+      return failure();
     rewriter.replaceOp(op, tupleConstruct.elements()[i]);
     return success();
   });
@@ -1512,6 +1610,33 @@ OpFoldResult AtenFloatTensorOp::fold(ArrayRef<Attribute> operands) {
   // aten.Float.Tensor, fold to the scalar number.
   if (auto numToTensorScalar = a().getDefiningOp<PrimNumToTensorScalarOp>())
     return numToTensorScalar.a();
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// AtenDivFloatOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenDivFloatOp::fold(ArrayRef<Attribute> operands) {
+  double lhs, rhs;
+  bool lConstant = matchPattern(getOperand(0), m_TorchConstantFloat(&lhs));
+  bool rConstant = matchPattern(getOperand(1), m_TorchConstantFloat(&rhs));
+  if (lConstant && lhs == 0.0)
+    return getF64FloatAttr(getContext(), 0.0);
+  if (lConstant && rConstant && rhs == 1.0)
+    return getF64FloatAttr(getContext(), lhs);
+  if (lConstant && rConstant)
+    return getF64FloatAttr(getContext(), lhs / rhs);
+  return nullptr;
+}
+
+// AtenCeilFloatOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenCeilFloatOp::fold(ArrayRef<Attribute> operands) {
+  double c;
+  if (matchPattern(getOperand(), m_TorchConstantFloat(&c)))
+    return getI64IntegerAttr(getContext(), std::ceil(c));
   return nullptr;
 }
 

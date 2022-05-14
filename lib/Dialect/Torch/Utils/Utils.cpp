@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
+#include "mlir/IR/BuiltinDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
 
 using namespace mlir;
@@ -52,6 +53,8 @@ torch_upstream::ScalarType Torch::getScalarTypeForType(Type type) {
     return torch_upstream::ScalarType::Int;
   if (type.isSignlessInteger(1))
     return torch_upstream::ScalarType::Bool;
+  if (type.isBF16())
+    return torch_upstream::ScalarType::BFloat16;
   llvm::report_fatal_error("unhandled type for getScalarTypeForType");
 }
 
@@ -69,8 +72,23 @@ Type Torch::getTypeForScalarType(
     return IntegerType::get(context, 32, signedness);
   case torch_upstream::ScalarType::Bool:
     return IntegerType::get(context, 1);
+  case torch_upstream::ScalarType::BFloat16:
+    return mlir::FloatType::getBF16(context);
   default:
     return Type();
+  }
+}
+
+Type Torch::getTorchTypeForScalarType(MLIRContext *context,
+                                      torch_upstream::ScalarType dtypeInt) {
+  switch (dtypeInt) {
+  case torch_upstream::ScalarType::Double:
+    return Torch::FloatType::get(context);
+  case torch_upstream::ScalarType::Long:
+    return Torch::IntType::get(context);
+  default:
+    llvm::report_fatal_error(
+        "Unsupported scalar type to Torch type conversion");
   }
 }
 
@@ -94,6 +112,10 @@ Value Torch::convertTensorToDtype(PatternRewriter &rewriter, Location loc,
   Value converted = rewriter.create<AtenToDtypeOp>(
       loc, newType, input, convertIntVal, falseVal, falseVal, noneVal);
   return converted;
+}
+
+bool Torch::isBuiltInType(Type type) {
+  return isa<BuiltinDialect>(type.getDialect());
 }
 
 int Torch::getTensorRank(Value tensor) {
