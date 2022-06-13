@@ -1003,6 +1003,28 @@ OpFoldResult AtenGeIntOp::fold(ArrayRef<Attribute> operands) {
 }
 
 //===----------------------------------------------------------------------===//
+// AtenBoolFloatOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenBoolFloatOp::fold(ArrayRef<Attribute> operands) {
+  double c;
+  if (matchPattern(getOperand(), m_TorchConstantFloat(&c)))
+    return getI1IntegerAttr(getContext(), c != 0.0);
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// AtenBoolIntOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenBoolIntOp::fold(ArrayRef<Attribute> operands) {
+  int64_t c;
+  if (matchPattern(getOperand(), m_TorchConstantInt(&c)))
+    return getI1IntegerAttr(getContext(), c != 0);
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
 // AtenFloatScalarOp
 //===----------------------------------------------------------------------===//
 
@@ -1414,14 +1436,20 @@ void PrimTupleIndexOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
     if (i >= (int64_t)tupleConstruct.elements().size())
       return failure();
 
-    Value element = tupleConstruct.elements()[i];
     // TODO: We should have a clear picture of whether we want to consistently
     // allow refinement, and where. It seems desirable to require precise
     // type equality for TupleConstruct / TupleIndex, but that might break
     // things.
-    if (element.getType() != op.getType())
-      return failure();
-    rewriter.replaceOp(op, tupleConstruct.elements()[i]);
+    Value replacement = tupleConstruct.elements()[i];
+    if (replacement.getType() != op.getType()) {
+      if (op.getType().isa<BaseTensorType>()) {
+        replacement = rewriter.create<Torch::TensorStaticInfoCastOp>(
+            op.getLoc(), op.getType(), replacement);
+      } else {
+        return failure();
+      }
+    }
+    rewriter.replaceOp(op, replacement);
     return success();
   });
 }
@@ -1572,6 +1600,17 @@ OpFoldResult AtenNegIntOp::fold(ArrayRef<Attribute> operands) {
   int64_t c;
   if (matchPattern(getOperand(), m_TorchConstantInt(&c)))
     return getI64IntegerAttr(getContext(), -c);
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// AtenSqrtIntOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenSqrtIntOp::fold(ArrayRef<Attribute> operands) {
+  int64_t c;
+  if (matchPattern(getOperand(), m_TorchConstantInt(&c)))
+    return getF64FloatAttr(getContext(), std::sqrt(c));
   return nullptr;
 }
 

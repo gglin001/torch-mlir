@@ -115,6 +115,7 @@ static torch_upstream::TypeKind getTypeKind(Type type) {
 /// types.
 static Optional<Type> meetElementTypes(Type lhs, Type rhs) {
   auto isNullOrBuiltIn = [](Type type) { return !type || isBuiltInType(type); };
+  (void)isNullOrBuiltIn;
   assert(isNullOrBuiltIn(lhs) && "`lhs` must be a builtin type");
   assert(isNullOrBuiltIn(rhs) && "`rhs` must be a builtin type");
 
@@ -173,6 +174,7 @@ struct ValueKnowledge {
 
   void setScalarType(Type type) {
     bool isValidScalarType = type.isa<NumberType, IntType, Torch::FloatType>();
+    (void)isValidScalarType;
     assert(isValidScalarType &&
            "scalarType can only be one of NumberType, IntType and FloatType");
     scalarType = type;
@@ -622,23 +624,23 @@ ChangeResult TypeAnalyzer::visitOperation(
           AtenReluOp, AtenGeluOp, AtenCeilOp, AtenGeluBackwardOp,
           AtenBitwiseNotOp, AtenToPrimDeviceOp, AtenCpuOp, AtenContiguousOp,
           AtenFill_ScalarOp, AtenDetachOp, AtenMaskedFill_ScalarOp, AtenCopy_Op,
-          AtenCumsumOp, AtenLayerNormOp, AtenClampOp, AtenNegOp, AtenFloorOp,
-          Aten_SoftmaxBackwardDataOp, AtenDropoutOp, AtenTanhBackwardOp,
-          Aten_LogSoftmaxBackwardDataOp, AtenAddIntOp, AtenAbsOp,
-          AtenThresholdOp, AtenSquareOp, ValsemVariantAtenUniformOp,
-          AtenBernoulliOp, AtenBernoulli_FloatOp, AtenBernoulli_TensorOp,
-          ValsemVariantAtenBernoulliFloatOp, ValsemVariantAtenBernoulliTensorOp,
-          ValsemVariantAtenFillScalarOp, AtenHardsigmoidOp, AtenCloneOp,
-          AtenHardswishOp, AtenSiluOp, AtenHardtanhOp, AtenMaskedSelectOp,
-          AtenMaxPool2dOp, AtenAvgPool2dOp, AtenAdaptiveAvgPool2dOp,
-          AtenFlattenUsingIntsOp, AtenSqueezeOp, AtenSqueezeDimOp,
-          AtenUnsqueezeOp, AtenViewOp, Aten_UnsafeViewOp, AtenReshapeOp,
-          Aten_ReshapeAliasOp, AtenResize_Op, AtenTransposeIntOp, AtenTOp,
-          AtenPermuteOp, AtenIndexSelectOp, AtenSelectIntOp, AtenSliceTensorOp,
-          AtenGatherOp, AtenExpandOp, AtenExpandAsOp, AtenBroadcastToOp,
-          AtenRepeatOp, AtenConstantPadNdOp, AtenPadOp, AtenZero_Op,
-          AtenIndexTensorOp, ValsemVariantAtenIndexPutImplOp, AtenIndexPutOp,
-          ValsemVariantAtenCopyOp, ValsemVariantAtenZeroOp,
+          AtenCumsumOp, AtenLayerNormOp, AtenClampOp, AtenClampMinOp,
+          AtenClampMaxOp, AtenNegOp, AtenFloorOp, Aten_SoftmaxBackwardDataOp,
+          AtenDropoutOp, AtenTanhBackwardOp, Aten_LogSoftmaxBackwardDataOp,
+          AtenAddIntOp, AtenAbsOp, AtenThresholdOp, AtenSquareOp,
+          ValsemVariantAtenUniformOp, AtenBernoulliOp, AtenBernoulli_FloatOp,
+          AtenBernoulli_TensorOp, ValsemVariantAtenBernoulliFloatOp,
+          ValsemVariantAtenBernoulliTensorOp, ValsemVariantAtenFillScalarOp,
+          AtenHardsigmoidOp, AtenCloneOp, AtenHardswishOp, AtenSiluOp,
+          AtenHardtanhOp, AtenMaskedSelectOp, AtenMaxPool2dOp, AtenAvgPool2dOp,
+          AtenAdaptiveAvgPool2dOp, AtenFlattenUsingIntsOp, AtenSqueezeOp,
+          AtenSqueezeDimOp, AtenUnsqueezeOp, AtenViewOp, Aten_UnsafeViewOp,
+          AtenReshapeOp, Aten_ReshapeAliasOp, AtenResize_Op, AtenTransposeIntOp,
+          AtenTOp, AtenPermuteOp, AtenIndexSelectOp, AtenSelectIntOp,
+          AtenSliceTensorOp, AtenGatherOp, AtenExpandOp, AtenExpandAsOp,
+          AtenBroadcastToOp, AtenRepeatOp, AtenConstantPadNdOp, AtenPadOp,
+          AtenZero_Op, AtenIndexTensorOp, ValsemVariantAtenIndexPutImplOp,
+          AtenIndexPutOp, ValsemVariantAtenCopyOp, AtenZeroFunctionalOp,
           AtenIndexPutHackedTwinOp, AtenMaskedFillScalarOp, AtenFlipOp,
           PrimAbsScalarOp>(op)) {
     return incorporateKnowledge(op->getResult(0), operands[0]->getValue());
@@ -671,7 +673,7 @@ ChangeResult TypeAnalyzer::visitOperation(
   // Dtype is always i1.
   if (isa<AtenEqScalarOp, AtenGeScalarOp, AtenGtScalarOp, AtenLtScalarOp,
           AtenLeScalarOp, AtenNeScalarOp, AtenAnyOp, AtenAllOp, AtenEqTensorOp,
-          AtenGtTensorOp, AtenLtTensorOp>(op)) {
+          AtenGtTensorOp, AtenLtTensorOp, AtenLogicalOrOp>(op)) {
     auto knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
     knowledge.dtype = IntegerType::get(op->getContext(), 1);
@@ -699,8 +701,8 @@ ChangeResult TypeAnalyzer::visitOperation(
 
   // Promote the two dtypes assuming possibly-zero rank.
   if (isa<AtenAddTensorOp, AtenSubTensorOp, AtenMulTensorOp, AtenDivTensorOp,
-          Aten__And__TensorOp, AtenMinimumOp, AtenMaximumOp,
-          AtenBitwiseAndTensorOp, AtenThresholdBackwardOp>(op)) {
+          AtenDivTensorModeOp, Aten__And__TensorOp, AtenMinimumOp,
+          AtenMaximumOp, AtenBitwiseAndTensorOp, AtenThresholdBackwardOp>(op)) {
     auto knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
     knowledge.dtype = getPromotedResultType(
@@ -736,7 +738,7 @@ ChangeResult TypeAnalyzer::visitOperation(
   }
 
   // Promote 2nd and 3rd operands.
-  if (isa<AtenWhereSelfOp>(op)) {
+  if (isa<AtenWhereSelfOp, AtenBaddbmmOp>(op)) {
     auto knowledge =
         ValueKnowledge::getTensorPessimisticValueState(getContext());
     knowledge.dtype = getPromotedResultType(
@@ -987,6 +989,14 @@ ChangeResult TypeAnalyzer::visitOperation(
 
   if (auto scalarImplicit = dyn_cast<AtenScalarImplicitOp>(op))
     return visitAtenScalarImplicitOp(scalarImplicit, operands);
+
+  if (auto vectorNorm = dyn_cast<AtenLinalgVectorNormOp>(op)) {
+    Type defaultDtype = operands[0]->getValue().dtype;
+    Type dtype = getDtypeOrDefault(vectorNorm.getContext(), vectorNorm.dtype(),
+                                   defaultDtype);
+    return visitReductionAlongDimIntListOp(
+        vectorNorm, vectorNorm.dim(), vectorNorm.keepdim(), dtype, operands);
+  }
 
   // Otherwise, this is an unknown operation. Just mark all results as
   // having reached a pessimistic fixpoint.

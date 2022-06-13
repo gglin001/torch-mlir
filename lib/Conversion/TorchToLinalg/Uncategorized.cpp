@@ -35,113 +35,6 @@ template <typename elementType> static bool hasElementType(Value tensor) {
   return tensorElementType.isa<elementType>();
 }
 
-static Value createElementwiseLinalgGeneric(
-    OpBuilder &b, Location loc, ValueRange tensorOperands,
-    Type resultElementType,
-    function_ref<void(OpBuilder &, Location, ValueRange)> bodyBuild) {
-  // The overall error handling strategy here is best viewed by thinking about
-  // what happens for a single result dimension. This loop not structured that
-  // way because it is hard to create the affine maps for each operand unless
-  // we structure the loop to iterate over tensor operands as the outer loop
-  // instead of inner loop. This pseudocode gives better intuition:
-  // ```
-  // for each result dimension:
-  //   for each tensor operand:
-  //     if it doesn't even have high enough rank relative to the result:
-  //       continue
-  //     if it is a static size-1 along this result dimension:
-  //       continue
-  //     if this is the first tensor operand that didn't continue above:
-  //       take its dimension size as the size of the non-broadcasted
-  //       traversal along this dimension (this may include a dynamic size-1,
-  //       **non-broadcasted** traversal!)
-  //     emit error check "if the size does not match the non-broadcasted
-  //     traversal size along this dimension, error"
-  // ```
-  SmallVector<int64_t> operandRanks;
-  operandRanks.resize(tensorOperands.size());
-  llvm::transform(tensorOperands, operandRanks.begin(), [](Value tensor) {
-    return tensor.getType().dyn_cast<RankedTensorType>().getRank();
-  });
-
-  auto resultRankIt =
-      std::max_element(operandRanks.begin(), operandRanks.end());
-  assert(resultRankIt != operandRanks.end() && "Unable to get result rank.");
-  int64_t resultRank = *resultRankIt;
-
-  // Initialize the resultShape to all 1's, as a fallback in case
-  // all sizes along that result dimension are statically 1.
-  auto c1 = b.create<arith::ConstantIndexOp>(loc, /*value=*/1);
-  SmallVector<Value> resultShape(resultRank, c1);
-  SmallVector<AffineMap> indexingMaps;
-  for (Value tensorOperand : tensorOperands) {
-    SmallVector<AffineExpr> exprs;
-    auto type = tensorOperand.getType().cast<RankedTensorType>();
-    for (auto size : llvm::enumerate(type.getShape())) {
-      // If the size is statically known to be 1, we don't want any
-      // error guards to be spuriously emitted, since we are specifically
-      // allowing size-1 broadcasts in this case, as they correspond to a
-      // constant-0 indexing map.
-      if (size.value() == 1) {
-        exprs.push_back(b.getAffineConstantExpr(0));
-        continue;
-      }
-
-      // The rank of this operand might be smaller than the overall rank of
-      // the broadcast. Add an offset to correlate it to the correct
-      // dimension of the result.
-      auto resultDim = size.index() + (resultRank - type.getRank());
-
-      // The generated linalg op will now be iterating along the full size
-      // of this dimension. Record that fact.
-      exprs.push_back(b.getAffineDimExpr(resultDim));
-
-      // Now, we need to ensure that such iteration is not going to trigger
-      // undefined behavior, by doing appropriate checks against the current
-      // dimension size.
-      auto currentDimSize = getDimOp(b, loc, tensorOperand, size.index());
-
-      // If the result size of this dimension has so far only hit the
-      // statically-known-to-be-1 case above (i.e., we have not yet assigned a
-      // new Value to `resultShape[resultDim]`), then we have no other dynamic
-      // values to check against, and merely need to record the current
-      // dimension size.
-      if (resultShape[resultDim] == c1) {
-        resultShape[resultDim] = currentDimSize;
-        continue;
-      }
-
-      // We prohibit the size-1 dynamic broadcasting scenario, so just check
-      // for exact equality with the running result size.
-      // This is the check which protects against the undefined behavior of
-      // the generated linalg op in the case of iterating two operands with
-      // dimensions sizes that are expected to match.
-      auto equalToRunning =
-          b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
-                                  resultShape[resultDim], currentDimSize);
-      b.create<cf::AssertOp>(loc, equalToRunning,
-                             "mismatched size for broadcast");
-    }
-    indexingMaps.push_back(AffineMap::get(
-        /*dimCount=*/resultRank, /*symbolCount=*/0, exprs, b.getContext()));
-  }
-
-  SmallVector<StringRef> iteratorTypes(resultRank,
-                                       getParallelIteratorTypeName());
-  // Add the indexing map for the outs init tensor.
-  indexingMaps.push_back(b.getMultiDimIdentityMap(resultRank));
-
-  Value initTensor = b.create<linalg::InitTensorOp>(
-      loc, getAsOpFoldResult(resultShape), resultElementType);
-  return b
-      .create<linalg::GenericOp>(loc,
-                                 /*resultTensorTypes=*/initTensor.getType(),
-                                 /*inputs=*/tensorOperands,
-                                 /*outputs=*/initTensor, indexingMaps,
-                                 iteratorTypes, bodyBuild)
-      .getResult(0);
-}
-
 template <arith::CmpFPredicate fpred, arith::CmpIPredicate iupred,
           arith::CmpIPredicate ispred>
 static Value createComparisonTemplate(OpBuilder &b, Location loc, Type type,
@@ -154,7 +47,7 @@ static Value createComparisonTemplate(OpBuilder &b, Location loc, Type type,
     if (intType.isSigned())
       return b.create<arith::CmpIOp>(loc, ispred, lhs, rhs);
   }
-  assert(false && "Unhandled element type for comparison");
+  llvm_unreachable("Unhandled element type for comparison");
 }
 
 static Value createGreaterThan(OpBuilder &b, Location loc, Type elementalType,
@@ -296,6 +189,17 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     Value lhs = convertScalarToDtype(b, loc, payloadArgs[0], dtype);
     Value rhs = convertScalarToDtype(b, loc, payloadArgs[1], dtype);
     return b.create<arith::AndIOp>(loc, lhs, rhs);
+  }
+  if (auto logicalOr = dyn_cast<AtenLogicalOrOp>(op)) {
+    MLIRContext *context = op->getContext();
+    Type floatDtype = mlir::FloatType::getF64(context);
+    Value lhs = convertScalarToDtype(b, loc, payloadArgs[0], floatDtype);
+    Value rhs = convertScalarToDtype(b, loc, payloadArgs[1], floatDtype);
+    Value zero =
+        b.create<arith::ConstantOp>(loc, b.getFloatAttr(floatDtype, 0));
+    Value lhsTest = createNotEqual(b, loc, floatDtype, lhs, zero);
+    Value rhsTest = createNotEqual(b, loc, floatDtype, rhs, zero);
+    return b.create<arith::OrIOp>(loc, lhsTest, rhsTest);
   }
   if (isa<AtenAbsOp>(op))
     return b.create<math::AbsOp>(loc, payloadArgs[0]);
@@ -543,11 +447,53 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     Type dtype = converter->convertType(div.getType())
                      .cast<RankedTensorType>()
                      .getElementType();
-    if (!dtype.isa<mlir::FloatType>())
+    if (!dtype.isa<mlir::FloatType>()) {
       div.emitError("unimplemented: non-floating point dtype");
+      return nullptr;
+    }
     Value lhs = convertScalarToDtype(b, loc, payloadArgs[0], dtype);
     Value rhs = convertScalarToDtype(b, loc, payloadArgs[1], dtype);
     return b.create<arith::DivFOp>(loc, lhs, rhs);
+  }
+  if (auto divTensorMode = dyn_cast<AtenDivTensorModeOp>(op)) {
+    AtenDivTensorModeOp::Adaptor adaptor(operands);
+    Type dtype = converter->convertType(divTensorMode.getType())
+                     .cast<RankedTensorType>()
+                     .getElementType();
+    if (!dtype.isa<mlir::FloatType>()) {
+      divTensorMode.emitError("unimplemented: non-floating point dtype");
+      return nullptr;
+    }
+    Value lhs = convertScalarToDtype(b, loc, payloadArgs[0], dtype);
+    Value rhs = convertScalarToDtype(b, loc, payloadArgs[1], dtype);
+    Value div = b.create<arith::DivFOp>(loc, lhs, rhs);
+
+    if (divTensorMode.rounding_mode().getType().isa<Torch::NoneType>())
+      return div;
+
+    std::string roundingMode;
+    if (!matchPattern(divTensorMode.rounding_mode(),
+                      m_TorchConstantStr(roundingMode))) {
+      divTensorMode.emitError("only support constant str rounding mode");
+      return nullptr;
+    }
+    if (roundingMode == "trunc") {
+      // "trunc" - rounds the results of the division towards zero. Equivalent
+      // to C-style integer division.
+      Value ceil = b.create<math::CeilOp>(loc, div);
+      Value floor = b.create<math::FloorOp>(loc, div);
+      Value cstZero = b.create<arith::ConstantOp>(loc, b.getZeroAttr(dtype));
+      Value pred =
+          b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::ULT, div, cstZero);
+      return b.create<arith::SelectOp>(loc, pred, ceil, floor);
+    }
+    if (roundingMode == "floor") {
+      // "floor" - rounds the results of the division down. Equivalent to
+      // floor division in Python (the // operator)
+      return b.create<math::FloorOp>(loc, div);
+    }
+    divTensorMode.emitError("invalid rounding mode");
+    return nullptr;
   }
   if (auto pow = dyn_cast<AtenPowTensorScalarOp>(op)) {
     if (!pow.getType()
@@ -941,17 +887,18 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     if (!isa<AtenTanhOp, AtenReluOp, AtenLeakyReluOp, AtenGeluOp,
              AtenGeluBackwardOp, AtenAddTensorOp, AtenMulTensorOp,
-             AtenDivTensorOp, AtenSubTensorOp, AtenLerpTensorOp, AtenSigmoidOp,
-             AtenExpOp, AtenMinimumOp, AtenMaximumOp, AtenToDtypeOp,
-             AtenClampOp, AtenRsubScalarOp, AtenMulScalarOp, AtenLogOp,
-             AtenErfOp, AtenSqrtOp, AtenFloorOp, AtenPowTensorScalarOp,
-             AtenLog2Op, AtenRsqrtOp, AtenDivScalarOp, AtenAbsOp,
-             AtenReciprocalOp, AtenBitwiseAndTensorOp, AtenGtScalarOp,
-             AtenGeScalarOp, AtenEqScalarOp, AtenLtScalarOp, AtenLeScalarOp,
-             AtenWhereSelfOp, AtenCeilOp, AtenGtTensorOp, AtenEqTensorOp,
-             AtenLtTensorOp, AtenSubScalarOp, AtenAddScalarOp, AtenThresholdOp,
-             AtenThresholdBackwardOp, AtenCloneOp, AtenSinOp, AtenCosOp,
-             AtenNeScalarOp, AtenNegOp, AtenMaskedFillScalarOp>(op))
+             AtenDivTensorOp, AtenDivTensorModeOp, AtenSubTensorOp,
+             AtenLerpTensorOp, AtenSigmoidOp, AtenExpOp, AtenMinimumOp,
+             AtenMaximumOp, AtenToDtypeOp, AtenClampOp, AtenRsubScalarOp,
+             AtenMulScalarOp, AtenLogOp, AtenErfOp, AtenSqrtOp, AtenFloorOp,
+             AtenPowTensorScalarOp, AtenLog2Op, AtenRsqrtOp, AtenDivScalarOp,
+             AtenAbsOp, AtenReciprocalOp, AtenBitwiseAndTensorOp,
+             AtenGtScalarOp, AtenGeScalarOp, AtenEqScalarOp, AtenLtScalarOp,
+             AtenLeScalarOp, AtenWhereSelfOp, AtenCeilOp, AtenGtTensorOp,
+             AtenEqTensorOp, AtenLtTensorOp, AtenSubScalarOp, AtenAddScalarOp,
+             AtenThresholdOp, AtenThresholdBackwardOp, AtenCloneOp, AtenSinOp,
+             AtenCosOp, AtenNeScalarOp, AtenNegOp, AtenMaskedFillScalarOp,
+             AtenLogicalOrOp>(op))
       return rewriter.notifyMatchFailure(op, "not a supported elementwise op");
 
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
@@ -964,7 +911,7 @@ public:
                           ->convertType(op->getResult(0).getType())
                           .cast<RankedTensorType>();
     bool hadErrorCreatingPayload = false;
-    Value generic = createElementwiseLinalgGeneric(
+    Value generic = torch_to_linalg::createElementwiseLinalgGeneric(
         rewriter, loc, tensorOperands, resultType.getElementType(),
         [&](OpBuilder &b, Location loc, ValueRange payloadArgs) {
           Value result = createLinalgPayloadCalculationForElementwiseOp(
@@ -1031,7 +978,7 @@ public:
     Value zeroVal = rewriter.create<arith::ConstantOp>(
         loc, rewriter.getZeroAttr(elementType));
 
-    Value finalRes = createElementwiseLinalgGeneric(
+    Value finalRes = torch_to_linalg::createElementwiseLinalgGeneric(
         rewriter, loc, {target}, elementType,
         [&](OpBuilder &b, Location loc, ValueRange args) {
           Value targetVal = args[0];
@@ -1068,8 +1015,9 @@ public:
                                              /*inclusive=*/false);
       DenseSet<int64_t> dimSet(dimsToReduce.begin(), dimsToReduce.end());
 
+      auto opInfo = torch_to_linalg::ReductionOpInfo{false, finalRes, dimSet};
       finalRes = torch_to_linalg::createReductionLinalgGeneric(
-          rewriter, loc, finalRes, dimSet, /*keepDim=*/false,
+          rewriter, loc, opInfo,
           /*initElem=*/zeroVal,
           [&](OpBuilder &b, Location loc, ValueRange args) {
             Value newVal = args[0];
@@ -1679,15 +1627,16 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
   MLIRContext *context = patterns.getContext();
   target.addIllegalOp<
       AtenTanhOp, AtenReluOp, AtenLeakyReluOp, AtenGeluOp, AtenGeluBackwardOp,
-      AtenAddTensorOp, AtenMulTensorOp, AtenDivTensorOp, AtenSubTensorOp,
-      AtenLerpTensorOp, AtenSigmoidOp, AtenMinimumOp, AtenMaximumOp,
-      AtenToDtypeOp, AtenClampOp, AtenRsubScalarOp, AtenLogOp, AtenErfOp,
-      AtenSqrtOp, AtenFloorOp, AtenCeilOp, AtenPowTensorScalarOp, AtenLog2Op,
-      AtenRsqrtOp, AtenAbsOp, AtenReciprocalOp, AtenBitwiseAndTensorOp,
-      AtenGtScalarOp, AtenGeScalarOp, AtenEqScalarOp, AtenLtScalarOp,
-      AtenLeScalarOp, AtenWhereSelfOp, AtenGtTensorOp, AtenEqTensorOp,
-      AtenLtTensorOp, AtenThresholdOp, AtenThresholdBackwardOp, AtenCloneOp,
-      AtenSinOp, AtenCosOp, AtenNeScalarOp, AtenMaskedFillScalarOp>();
+      AtenAddTensorOp, AtenMulTensorOp, AtenDivTensorOp, AtenDivTensorModeOp,
+      AtenSubTensorOp, AtenLerpTensorOp, AtenSigmoidOp, AtenMinimumOp,
+      AtenMaximumOp, AtenToDtypeOp, AtenClampOp, AtenRsubScalarOp, AtenLogOp,
+      AtenErfOp, AtenSqrtOp, AtenFloorOp, AtenCeilOp, AtenPowTensorScalarOp,
+      AtenLog2Op, AtenRsqrtOp, AtenAbsOp, AtenReciprocalOp,
+      AtenBitwiseAndTensorOp, AtenGtScalarOp, AtenGeScalarOp, AtenEqScalarOp,
+      AtenLtScalarOp, AtenLeScalarOp, AtenWhereSelfOp, AtenGtTensorOp,
+      AtenEqTensorOp, AtenLtTensorOp, AtenThresholdOp, AtenThresholdBackwardOp,
+      AtenCloneOp, AtenSinOp, AtenCosOp, AtenNeScalarOp, AtenMaskedFillScalarOp,
+      AtenLogicalOrOp>();
   patterns.add<ConvertElementwiseOp>(typeConverter, context);
   target.addIllegalOp<AtenNllLossForwardOp>();
   patterns.add<ConvertAtenDetachOp>(typeConverter, context);

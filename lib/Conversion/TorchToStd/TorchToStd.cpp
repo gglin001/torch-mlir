@@ -20,6 +20,7 @@
 #include "torch-mlir/Conversion/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
+#include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionDialect.h"
 #include "torch-mlir/Dialect/TorchConversion/Transforms/BackendTypeConversion.h"
 
@@ -80,18 +81,22 @@ public:
 
 namespace {
 template <typename AtenOp, typename UnaryOp>
-class ConvertAtenUnaryOp : public OpConversionPattern<AtenOp> {
+class ConvertAtenUnaryOpToFloatMathOp : public OpConversionPattern<AtenOp> {
 public:
   using OpConversionPattern<AtenOp>::OpConversionPattern;
   LogicalResult
   matchAndRewrite(AtenOp op,
                   typename OpConversionPattern<AtenOp>::OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value input = adaptor.a();
     Type resultType =
         this->getTypeConverter()->convertType(op->getResult(0).getType());
-    Value result = rewriter.create<UnaryOp>(op.getLoc(), adaptor.a());
-    rewriter.replaceOp(
-        op, convertScalarToDtype(rewriter, op.getLoc(), result, resultType));
+    if (!input.getType().isa<mlir::FloatType>())
+      input = convertScalarToDtype(rewriter, loc, input, rewriter.getF64Type());
+    Value result = rewriter.create<UnaryOp>(loc, input);
+    rewriter.replaceOp(op,
+                       convertScalarToDtype(rewriter, loc, result, resultType));
     return success();
   }
 };
@@ -190,6 +195,82 @@ public:
 };
 } // namespace
 
+namespace {
+template <typename OpTy>
+class ConvertAtenAnyOrAllBoolOp : public OpConversionPattern<OpTy> {
+public:
+  using OpConversionPattern<OpTy>::OpConversionPattern;
+  using OpAdaptor = typename OpTy::Adaptor;
+  virtual bool reductionFunction(ArrayRef<bool> inputArray) const = 0;
+  LogicalResult
+  matchAndRewrite(OpTy op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    SmallVector<Value> inputListTorchBool;
+    if (!getListConstructElements(op.self(), inputListTorchBool)) {
+      return rewriter.notifyMatchFailure(
+          op, "Unimplemented input list not constructed from ListConstruct");
+    }
+    SmallVector<bool> inputListBool;
+    for (Value v : inputListTorchBool) {
+      bool cst;
+      if (!matchPattern(v, m_TorchConstantBool(&cst)))
+        return rewriter.notifyMatchFailure(
+            op, "only support constant bool input list elements");
+      inputListBool.push_back(cst);
+    }
+    bool result = reductionFunction(inputListBool);
+
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        op, rewriter.getBoolAttr(result));
+    return success();
+  }
+};
+
+class ConvertAtenAnyOp : public ConvertAtenAnyOrAllBoolOp<AtenAnyBoolOp> {
+  using ConvertAtenAnyOrAllBoolOp<AtenAnyBoolOp>::ConvertAtenAnyOrAllBoolOp;
+  bool reductionFunction(ArrayRef<bool> inputArray) const override {
+    return llvm::any_of(inputArray,
+                        [](bool inputListElem) { return inputListElem; });
+  }
+};
+
+class ConvertAtenAllOp : public ConvertAtenAnyOrAllBoolOp<AtenAllBoolOp> {
+  using ConvertAtenAnyOrAllBoolOp<AtenAllBoolOp>::ConvertAtenAnyOrAllBoolOp;
+  bool reductionFunction(ArrayRef<bool> inputArray) const override {
+    return llvm::all_of(inputArray,
+                        [](bool inputListElem) { return inputListElem; });
+  }
+};
+} // namespace
+
+namespace {
+template <typename OpTy, typename CmpOpTy, typename CmpOpPred, CmpOpPred Pred>
+class ConvertAtenBoolLikeOp : public OpConversionPattern<OpTy> {
+public:
+  using OpConversionPattern<OpTy>::OpConversionPattern;
+  using OpAdaptor = typename OpTy::Adaptor;
+  LogicalResult
+  matchAndRewrite(OpTy op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Type inputType = adaptor.a().getType();
+    Value cstZero = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getZeroAttr(inputType));
+    Value cstTrue =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getBoolAttr(true));
+    Value cstFalse =
+        rewriter.create<arith::ConstantOp>(loc, rewriter.getBoolAttr(false));
+
+    Value cmpPred;
+    cmpPred = rewriter.create<CmpOpTy>(loc, Pred, adaptor.a(), cstZero);
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, cmpPred, cstTrue,
+                                                 cstFalse);
+    return success();
+  }
+};
+} // namespace
+
 // -----------------------------------------------------------------------------
 // The pass
 // -----------------------------------------------------------------------------
@@ -272,7 +353,23 @@ public:
     patterns.add<ConvertAtenBinaryOp<AtenDivFloatOp, arith::DivFOp>>(
         typeConverter, context);
     target.addIllegalOp<AtenCeilFloatOp>();
-    patterns.add<ConvertAtenUnaryOp<AtenCeilFloatOp, math::CeilOp>>(
+    patterns
+        .add<ConvertAtenUnaryOpToFloatMathOp<AtenCeilFloatOp, math::CeilOp>>(
+            typeConverter, context);
+    target.addIllegalOp<AtenSqrtIntOp>();
+    patterns.add<ConvertAtenUnaryOpToFloatMathOp<AtenSqrtIntOp, math::SqrtOp>>(
+        typeConverter, context);
+    target.addIllegalOp<AtenAnyBoolOp, AtenAllBoolOp>();
+    patterns.add<ConvertAtenAnyOp>(typeConverter, context);
+    patterns.add<ConvertAtenAllOp>(typeConverter, context);
+    target.addIllegalOp<AtenBoolFloatOp, AtenBoolIntOp>();
+    patterns.add<
+        ConvertAtenBoolLikeOp<AtenBoolFloatOp, arith::CmpFOp,
+                              arith::CmpFPredicate, arith::CmpFPredicate::UNE>>(
+        typeConverter, context);
+    patterns.add<
+        ConvertAtenBoolLikeOp<AtenBoolIntOp, arith::CmpIOp,
+                              arith::CmpIPredicate, arith::CmpIPredicate::ne>>(
         typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,

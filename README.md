@@ -1,4 +1,4 @@
-# The Torch-MLIR Project
+# The Torch-MLIR Project 
 
 The Torch-MLIR project aims to provide first class compiler support from the [PyTorch](https://pytorch.org) ecosystem to the MLIR ecosystem.
 
@@ -16,6 +16,8 @@ The MLIR project is a novel approach to building reusable and extensible compile
 [Torch-MLIR](https://github.com/llvm/torch-mlir)
 Multiple Vendors use MLIR as the middle layer, mapping from platform frameworks like PyTorch, JAX, and TensorFlow into MLIR and then progressively lowering down to their target hardware. We have seen half a dozen custom lowerings from PyTorch to MLIR. Having canonical lowerings from the PyTorch ecosystem to the MLIR ecosystem would provide much needed relief to hardware vendors to focus on their unique value rather than implementing yet another PyTorch frontend for MLIR. The goal is to be similar to current hardware vendors adding LLVM target support instead of each one also implementing Clang / a C++ frontend.
 
+[![Release Build](https://github.com/llvm/torch-mlir/actions/workflows/buildRelease.yml/badge.svg)](https://github.com/llvm/torch-mlir/actions/workflows/buildRelease.yml)
+
 ## All the roads from PyTorch to Torch MLIR Dialect
 
 We have few paths to lower down to the Torch MLIR Dialect.
@@ -32,6 +34,7 @@ We have few paths to lower down to the Torch MLIR Dialect.
 - `#torch-mlir` channel on the LLVM [Discord](https://discord.gg/xS7Z362) - this is the most active communication channel
 - Github issues [here](https://github.com/llvm/torch-mlir/issues)
 - [`torch-mlir` section](https://llvm.discourse.group/c/projects-that-want-to-become-official-llvm-projects/torch-mlir/41) of LLVM Discourse
+- Weekly meetings on Mondays 9AM PST. See [here](https://discourse.llvm.org/t/community-meeting-developer-hour-refactoring-recurring-meetings/62575) for more information.
 
 ## Install torch-mlir snapshot
 
