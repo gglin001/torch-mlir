@@ -65,6 +65,18 @@ The following additional quality of life flags can be used to reduce build time:
   -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld" -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld"
 # Use --ld-path= instead of -fuse-ld=lld for clang > 13
 ```
+* Enabling libtorch binary cache
+By default we download the latest version of libtorch everytime you build so we are always on the latest version. Set `-DLIBTORCH_CACHE=ON` to
+not download the latest version everytime. If libtorch gets out of date and you test against a newer PyTorch you may notice failures.
+```shell
+  -DLIBTORCH_CACHE=ON
+```
+* Enabling building libtorch as part of your build
+By default we download the latest version of libtorch. We have an experimental path to build libtorch (and PyTorch wheels) from source.
+```shell
+  -DLIBTORCH_SRC_BUILD=ON  # Build Libtorch from source
+  -DLIBTORCH_VARIANT=shared # Set the variant of libtorch to build / link against. (`shared`|`static` and optionally `cxxabi11`)
+```
 
 ### Building against a pre-built LLVM
 
@@ -128,6 +140,29 @@ file in the workspace folder with the correct PYTHONPATH set. This allows
 tools like VSCode to work by default for debugging. This file can also be
 manually `source`'d in a shell.
 
+
+## Bazel Build
+
+> **NOTE** Our Bazel build follows LLVM's Bazel build policy: only the
+> subcommunity interested in Bazel is responsible for fixing it. Average
+> Torch-MLIR developers should not be notified of any Bazel build issues and are
+> not responsible for fixing any breakages (though any help is, of course,
+> welcome). For more info, see LLVM's
+> [Peripheral Support Tier](https://llvm.org/docs/SupportPolicy.html#peripheral-tier)
+> definition.
+
+Torch-MLIR can also be built using Bazel (apart from the official CMake build) for users that depend on Bazel in their workflows. To build `torch-mlir-opt` using Bazel, follow these steps:
+
+1. Install [Bazel](https://docs.bazel.build/versions/main/install.html) if you don't already have it
+2. Install a relatively new release of [Clang](https://releases.llvm.org/download.html)
+3. Build:
+```shell
+cd utils/bazel
+bazel build @torch-mlir//...
+```
+4. Find the built binary at `bazel-bin/external/torch-mlir/torch-mlir-opt`.
+
+
 # Testing
 
 Torch-MLIR has two types of tests:
@@ -186,3 +221,49 @@ $TORCH_MLIR_BUILD_DIR/bin/llvm-lit $TORCH_MLIR_SRC_ROOT/test -v --filter=canonic
 ```
 
 Most of the unit tests use the [`FileCheck` tool](https://llvm.org/docs/CommandGuide/FileCheck.html) to verify expected outputs.
+
+# Unexpected test failures with PyTorch / Libtorch skew
+
+Torch-MLIR currently by default links to libtorch binaries and tests are run with the PyTorch nightlies. This can cause version / api
+skew in your tests like (https://github.com/llvm/torch-mlir/issues/1007). If you notice any unexpected test failures please follow the steps below:
+
+```
+rm -rf libtorch* # note the asterisk after libtorch, since there is also a .zip file that needs to be removed
+rm -rf build/   
+python -m pip install -r requirements.txt --upgrade # to get the latest pytorch 
+# Then rebuild and test torch-mlir
+```
+We expect this to be fixed once we take on a dependency on PyTorch and build it from source. That work is being tracked in [this](https://github.com/llvm/torch-mlir/tree/release-src-build) branch.
+
+# Updating the LLVM submodule
+
+Torch-MLIR maintains `llvm-project` (which contains, among other things,
+upstream MLIR) as a submodule in `externals/llvm-project`. We aim to update this
+at least weekly to new LLVM revisions to bring in the latest features and spread
+out over time the effort of updating our code for MLIR API breakages.
+
+Updating the LLVM submodule is done by:
+
+1. In the `externals/llvm-project` directory, run `git pull` to update to the
+   upstream revision of interest (such as a particular upstream change that is
+   needed for your Torch-MLIR PR).
+2. Rebuild and test Torch-MLIR (see above), fixing any issues that arise. This
+   might involve fixing various API breakages introduced upstream (they are
+   likely unrelated to what you are working on). If these fixes are too complex,
+   please file a work-in-progress PR explaining the issues you are running into
+   asking for help so that someone from the community can help.
+3. Run `build_tools/update_shape_lib.sh` to update the shape library -- this is
+   sometimes needed because upstream changes can affect canonicalization and
+   other minor details of the IR in the shape library. See [docs/shape_lib.md](docs/shape_lib.md) for more details on the shape library.
+
+
+Here are some examples of PR's updating the LLVM submodule:
+
+- https://github.com/llvm/torch-mlir/pull/958
+- https://github.com/llvm/torch-mlir/pull/856
+
+
+# Other docs
+
+- GitHub wiki: https://github.com/llvm/torch-mlir/wiki
+- Of particular interest in the [How to add end-to-end support for new Torch ops](https://github.com/llvm/torch-mlir/wiki/Torch-ops-E2E-implementation) doc.

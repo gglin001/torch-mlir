@@ -363,6 +363,17 @@ public:
                  ArrayRef<LatticeElement<ValueKnowledge> *> operands) final;
 
 private:
+  // Get the MLIR type of the tensor dtype given the dtype integer value and the
+  // input dtype. When DType is None the type is inferred from the input dtype.
+  void fillInDTypeGivenDTypeIntAndInputDType(ValueKnowledge &knowledge,
+                                             Value dtype, Type inputDType);
+
+  // Get the MLIR type of the tensor dtype given the dtype integer value and
+  // data type of torch type. When DType is None the type is inferred from the
+  // data type.
+  void fillInDTypeGivenDTypeAndDataType(ValueKnowledge &knowledge, Value dtype,
+                                        Type dataType);
+
   /// Incorporates `knowledge` into the lattice state of `v`.
   ///
   /// This method should be used instead of
@@ -587,24 +598,21 @@ getPromotedResultTypeAssumingNonZeroRank(MLIRContext *context,
                                /*skipRankCheck=*/true);
 }
 
-// Get the MLIR type of the tensor dtype given the dtype integer value and the
-// input dtype. When DType is None the type is inferred from the input dtype.
-static void fillInDTypeGivenDTypeIntAndInputDType(ValueKnowledge &knowledge,
-                                                  Value dtype,
-                                                  Type inputDType) {
+void TypeAnalyzer::fillInDTypeGivenDTypeIntAndInputDType(
+    ValueKnowledge &knowledge, Value dtype, Type inputDType) {
   assert(isBuiltInType(inputDType) && "`inputDType` must be a builtin type");
   int64_t dtypeInt;
   if (dtype.getType().isa<Torch::NoneType>())
     knowledge.dtype = inputDType;
   else if (matchPattern(dtype, m_TorchConstantInt(&dtypeInt)))
     knowledge.dtype = getTypeForDTypeInteger(dtype.getContext(), dtypeInt);
+  else if (auto primDtypeOp = dyn_cast<PrimDtypeOp>(dtype.getDefiningOp()))
+    knowledge.dtype = getLatticeElement(primDtypeOp.a()).getValue().dtype;
 }
 
-// Get the MLIR type of the tensor dtype given the dtype integer value and data
-// type of torch type. When DType is None the type is inferred from the data
-// type.
-static void fillInDTypeGivenDTypeAndDataType(ValueKnowledge &knowledge,
-                                             Value dtype, Type dataType) {
+void TypeAnalyzer::fillInDTypeGivenDTypeAndDataType(ValueKnowledge &knowledge,
+                                                    Value dtype,
+                                                    Type dataType) {
   assert(isa<TorchDialect>(dataType.getDialect()) &&
          "`dataType` must be a torch type");
   Type dtypeForDataType = getDefaultDtypeForTorchScalar(dataType);
@@ -637,12 +645,13 @@ ChangeResult TypeAnalyzer::visitOperation(
           AtenSqueezeDimOp, AtenUnsqueezeOp, AtenViewOp, Aten_UnsafeViewOp,
           AtenReshapeOp, Aten_ReshapeAliasOp, AtenResize_Op, AtenTransposeIntOp,
           AtenTOp, AtenPermuteOp, AtenIndexSelectOp, AtenSelectIntOp,
-          AtenSliceTensorOp, AtenGatherOp, AtenExpandOp, AtenExpandAsOp,
-          AtenBroadcastToOp, AtenRepeatOp, AtenConstantPadNdOp, AtenPadOp,
-          AtenZero_Op, AtenIndexTensorOp, ValsemVariantAtenIndexPutImplOp,
-          AtenIndexPutOp, ValsemVariantAtenCopyOp, AtenZeroFunctionalOp,
+          AtenSelectScatterOp, AtenSliceTensorOp, AtenSliceScatterOp,
+          AtenGatherOp, AtenExpandOp, AtenExpandAsOp, AtenBroadcastToOp,
+          AtenRepeatOp, AtenConstantPadNdOp, AtenPadOp, AtenZero_Op,
+          AtenIndexTensorOp, ValsemVariantAtenIndexPutImplOp, AtenIndexPutOp,
+          ValsemVariantAtenCopyOp, AtenZeroOp,
           AtenIndexPutHackedTwinOp, AtenMaskedFillScalarOp, AtenFlipOp,
-          PrimAbsScalarOp>(op)) {
+          PrimAbsScalarOp, AtenNumpyTOp, AtenTriuOp>(op)) {
     return incorporateKnowledge(op->getResult(0), operands[0]->getValue());
   }
 
@@ -691,7 +700,7 @@ ChangeResult TypeAnalyzer::visitOperation(
 
   // Promote the two dtypes assuming non-zero rank.
   if (isa<AtenMmOp, AtenBmmOp, AtenMatmulOp, AtenConv2dOp, AtenConvolutionOp,
-          AtenConvolutionOverrideableOp>(op)) {
+          Aten_ConvolutionOp, AtenConvolutionOverrideableOp>(op)) {
     auto knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
     knowledge.dtype = getPromotedResultTypeAssumingNonZeroRank(
@@ -702,7 +711,8 @@ ChangeResult TypeAnalyzer::visitOperation(
   // Promote the two dtypes assuming possibly-zero rank.
   if (isa<AtenAddTensorOp, AtenSubTensorOp, AtenMulTensorOp, AtenDivTensorOp,
           AtenDivTensorModeOp, Aten__And__TensorOp, AtenMinimumOp,
-          AtenMaximumOp, AtenBitwiseAndTensorOp, AtenThresholdBackwardOp>(op)) {
+          AtenMaximumOp, AtenBitwiseAndTensorOp, AtenThresholdBackwardOp,
+          AtenFloorDivideOp>(op)) {
     auto knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
     knowledge.dtype = getPromotedResultType(

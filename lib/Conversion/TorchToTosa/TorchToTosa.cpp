@@ -1129,8 +1129,10 @@ public:
       SmallVector<int32_t> transposedLhsDims;
 
       // Step: generate the common dim/shape information
+      bool hasDynamicDims = false;
       for (uint32_t dim = 0; dim < maxInputRank - 2; dim++) {
         bool isDynamicDim = ShapedType::isDynamic(lhsBroadcastedShape[dim]);
+        hasDynamicDims |= isDynamicDim;
         if (isDynamicDim ||
             lhsBroadcastedShape[dim] == rhsBroadcastedShape[dim]) {
           commonValue *= lhsBroadcastedShape[dim];
@@ -1138,11 +1140,13 @@ public:
         }
       }
 
+      // TODO: Handle the case when there are dynamic batch dimensions.
+      if (hasDynamicDims)
+        commonValue = ShapedType::kDynamicSize;
+
       // Step: generate the LHS squeezed dim/shape information.
-      bool hasDynamicDims = false;
       for (uint32_t dim = 0; dim < maxInputRank - 2; dim++) {
         bool isDynamicDim = ShapedType::isDynamic(lhsBroadcastedShape[dim]);
-        hasDynamicDims |= isDynamicDim;
         if (!isDynamicDim &&
             lhsBroadcastedShape[dim] != rhsBroadcastedShape[dim]) {
           lhsSqueezedValue *= lhsBroadcastedShape[dim];
@@ -1311,11 +1315,11 @@ public:
                 matmulLhs, matmulRhs)
             .getResult();
 
-    // Perform the reshape to output shape. This is always required unless both
-    // inputs are rank=3, in which case the tosa.matmul output itself is
+    // Perform the reshape to output shape. This is always required unless max
+    // input rank=3 and there was no broadcasting, in which case the tosa.matmul output itself is
     // correctly shaped.
     bool performOpReshape =
-        !(lhsRank == 3 && rhsRank == 3 && lhsShape[0] == rhsShape[0]);
+        !(maxInputRank == 3 && !performBatchDimBroadcast);
 
     if (performOpReshape) {
       // Since the output shape may be unknown, we construct it
@@ -2605,6 +2609,143 @@ LogicalResult ConvertAtenOp<AtenGeluBackwardOp>::matchAndRewrite(
   return success();
 }
 
+template <>
+LogicalResult ConvertAtenOp<AtenEmbeddingOp>::matchAndRewrite(
+    AtenEmbeddingOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+
+  Value weight = adaptor.weight();
+  Value indices = adaptor.indices();
+  RankedTensorType outType =
+      typeConverter->convertType(op.getType()).cast<RankedTensorType>();
+
+  auto indicesType = indices.getType().dyn_cast<RankedTensorType>();
+  if (!indicesType || !indicesType.getElementType().isa<IntegerType>())
+    return op.emitError("Indices must be of integer tensor type");
+
+  if (indicesType.getRank() != 2)
+    return op.emitError("indices must be of rank 2");
+
+  auto weightType = weight.getType().cast<RankedTensorType>();
+  if (weightType.getRank() != 2)
+    return op.emitError("weight must be of rank 2");
+
+  // FIXME: padding_idx, scale_grad_by_freq and sparse are not handled yet.
+  int64_t paddingIdx;
+  if (!matchPattern(op.padding_idx(), m_TorchConstantInt(&paddingIdx)))
+    return rewriter.notifyMatchFailure(
+        op, "only supports constant int padding_idx for embedding op");
+
+  bool scaleGradByFreq;
+  if (!matchPattern(op.scale_grad_by_freq(),
+                    m_TorchConstantBool(&scaleGradByFreq)))
+    return rewriter.notifyMatchFailure(
+        op, "only supports constant bool scale_grad_by_freq for embedding op");
+  if (scaleGradByFreq)
+    return rewriter.notifyMatchFailure(
+        op,
+        "only supports scale_grad_by_freq equals to False for embedding op");
+
+  bool isSparse;
+  if (!matchPattern(op.sparse(), m_TorchConstantBool(&isSparse)))
+    return rewriter.notifyMatchFailure(
+        op, "only supports constant bool sparse for embedding op");
+  if (isSparse)
+    return rewriter.notifyMatchFailure(
+        op, "only support sparse equals to False for embedding op");
+
+  // For inference:
+  //    Weights [num_embeddings, embedding_dim], Indices [X, Y]
+  //    Output [X, Y, embedding_dim] = Weights[Indices[x, y]] forall x in X, y
+  //    in Y
+  //
+  //    Condition: num_embeddings > Indices [x, y] forall x in X, y in Y
+
+  // Reshape the weight, since tosa.gather expects a 3D tensor
+  auto indicesShape = indicesType.getShape();
+  auto weightShape = weightType.getShape();
+
+  SmallVector<int64_t> newWeightShape = {1};
+  for (auto s : weightShape)
+    newWeightShape.push_back(s);
+
+  auto reshapedWeight = rewriter.create<tosa::ReshapeOp>(
+      op->getLoc(),
+      RankedTensorType::get(newWeightShape, weightType.getElementType()),
+      weight, rewriter.getI64ArrayAttr(newWeightShape));
+
+  int64_t numIndices = 1;
+  if (indicesType.hasStaticShape()) {
+    for (auto s : indicesShape)
+      numIndices *= s;
+  } else {
+    numIndices = ShapedType::kDynamicSize;
+  }
+
+  SmallVector<int64_t> newIndicesShape = {1, numIndices};
+  auto reshapedIndices = rewriter.create<tosa::ReshapeOp>(
+      op->getLoc(),
+      RankedTensorType::get(newIndicesShape, indicesType.getElementType()),
+      indices, rewriter.getI64ArrayAttr(newIndicesShape));
+
+  auto castIndices = rewriter.create<tosa::CastOp>(
+      op->getLoc(),
+      RankedTensorType::get(newIndicesShape, rewriter.getIntegerType(32)),
+      reshapedIndices);
+
+  SmallVector<int64_t> intermediateOutShape = {1, numIndices, weightShape[1]};
+  auto gatherOp = rewriter.create<tosa::GatherOp>(
+      op->getLoc(),
+      RankedTensorType::get(intermediateOutShape, weightType.getElementType()),
+      reshapedWeight, castIndices);
+
+  rewriter.replaceOpWithNewOp<tosa::ReshapeOp>(
+      op, outType, gatherOp, rewriter.getI64ArrayAttr(outType.getShape()));
+
+  return success();
+}
+
+template <>
+LogicalResult ConvertAtenOp<AtenTransposeIntOp>::matchAndRewrite(
+    AtenTransposeIntOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+
+  auto selfType = adaptor.self().getType().dyn_cast<TensorType>();
+  if (!selfType)
+    return op.emitError("Only tensor types are supported");
+
+  // Only statically resolvable values are currently supported
+  int64_t dim0, dim1;
+  if (!matchPattern(op.dim0(), m_TorchConstantInt(&dim0)))
+    return op->emitError("dim0 must be a Scalar constant");
+
+  if (!matchPattern(op.dim1(), m_TorchConstantInt(&dim1)))
+    return op->emitError("dim1 must be a Scalar constant");
+
+  dim0 = toPositiveDim(dim0, selfType.getRank());
+  dim1 = toPositiveDim(dim1, selfType.getRank());
+
+  auto selfRank = selfType.getRank();
+  if (!isValidDim(dim0, selfRank) || !isValidDim(dim1, selfRank))
+    return op->emitError("dim0 and dim1 must be less than tensor rank");
+
+  SmallVector<int32_t> transposeDims;
+  for (auto i = 0; i < selfType.getRank(); ++i)
+    transposeDims.push_back(i);
+
+  transposeDims[dim0] = dim1;
+  transposeDims[dim1] = dim0;
+
+  auto transposeDimsConst = mlir::tosa::getConstTensor<int32_t>(
+      rewriter, op.getOperation(), transposeDims, {selfType.getRank()});
+
+  rewriter.replaceOpWithNewOp<tosa::TransposeOp>(
+      op, getTypeConverter()->convertType(op.getType()), adaptor.self(),
+      transposeDimsConst.getValue());
+
+  return success();
+}
+
 template <typename AtenOpT, typename TosaOpT>
 class ConvertAtenPoolingBaseOp : public OpConversionPattern<AtenOpT> {
 public:
@@ -3169,11 +3310,11 @@ public:
                                            tosa::AvgPool2dOp);
 #undef INSERT_ADAPTIVE_POOLING_ATEMOP_PATTERN
 
-target.addIllegalOp<AtenMaxPool2dOp>();
-patterns.add<ConvertAtenMaxPool2dOp>(typeConverter, context);
+    target.addIllegalOp<AtenMaxPool2dOp>();
+    patterns.add<ConvertAtenMaxPool2dOp>(typeConverter, context);
 
-target.addIllegalOp<AtenAvgPool2dOp>();
-patterns.add<ConvertAtenAvgPool2dOp>(typeConverter, context);
+    target.addIllegalOp<AtenAvgPool2dOp>();
+    patterns.add<ConvertAtenAvgPool2dOp>(typeConverter, context);
 
 #define INSERT_CONSTANT_FILL_PATTERN(AtenOp, fillVal)                          \
   target.addIllegalOp<AtenOp>();                                               \
@@ -3213,6 +3354,8 @@ patterns.add<ConvertAtenAvgPool2dOp>(typeConverter, context);
     INSERT_ATENOP_PATTERN(AtenViewOp);
     INSERT_ATENOP_PATTERN(AtenGeluOp);
     INSERT_ATENOP_PATTERN(AtenGeluBackwardOp);
+    INSERT_ATENOP_PATTERN(AtenEmbeddingOp);
+    INSERT_ATENOP_PATTERN(AtenTransposeIntOp);
 #undef INSERT_ATENOP_PATTERN
 
     if (failed(applyPartialConversion(getOperation(), target,

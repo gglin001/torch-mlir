@@ -11,7 +11,7 @@
 # Usage:
 #   sudo install_macos_deps.sh
 
-set -e -o pipefail
+set -eu -o pipefail
 
 if [[ "$(whoami)" != "root" ]]; then
   echo "ERROR: Must setup deps as root"
@@ -19,13 +19,13 @@ if [[ "$(whoami)" != "root" ]]; then
 fi
 
 PYTHON_INSTALLER_URLS=(
-  "https://www.python.org/ftp/python/3.10.4/python-3.10.4-macos11.pkg"
-  "https://www.python.org/ftp/python/3.9.12/python-3.9.12-macos11.pkg"
+  "https://www.python.org/ftp/python/3.10.5/python-3.10.5-macos11.pkg"
+  "https://www.python.org/ftp/python/3.9.13/python-3.9.13-macos11.pkg"
 )
 
 PYTHON_SPECS=(
-  3.10@https://www.python.org/ftp/python/3.10.4/python-3.10.4-macos11.pkg
-  3.9@https://www.python.org/ftp/python/3.9.12/python-3.9.12-macos11.pkg
+  3.10@https://www.python.org/ftp/python/3.10.5/python-3.10.5-macos11.pkg
+  3.9@https://www.python.org/ftp/python/3.9.13/python-3.9.13-macos11.pkg
 )
 
 for python_spec in $PYTHON_SPECS; do
@@ -37,11 +37,11 @@ for python_spec in $PYTHON_SPECS; do
 
   # Install Python.
   if ! [ -x "$python_exe" ]; then
-    package_basename="$(basename $url)"
+    package_basename="$(basename "$url")"
     download_path="/tmp/torch_mlir_python_install/$package_basename"
-    mkdir -p "$(dirname $download_path)"
+    mkdir -p "$(dirname "$download_path")"
     echo "Downloading $url -> $download_path"
-    curl $url -o "$download_path"
+    curl "$url" -o "$download_path"
 
     echo "Installing $download_path"
     installer -pkg "$download_path" -target /

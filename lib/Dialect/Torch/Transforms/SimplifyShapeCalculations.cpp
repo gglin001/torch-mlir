@@ -269,6 +269,22 @@ public:
 };
 } // namespace
 
+namespace {
+class FoldPrimUncheckedCastOp : public OpRewritePattern<PrimUncheckedCastOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(PrimUncheckedCastOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!isValidSubtype(op.x().getType(), op.result().getType())) {
+      return rewriter.notifyMatchFailure(
+          op, "input tensor type is not a valid subtype of result type");
+    }
+    rewriter.replaceOp(op, op.x());
+    return success();
+  }
+};
+} // namespace
+
 static void refineShapeCalculateResult(ShapeCalculateOp op, int resultNum,
                                        PatternRewriter &rewriter,
                                        bool &madeChange) {
@@ -334,7 +350,7 @@ static void refineShapeCalculateResult(ShapeCalculateOp op, int resultNum,
   // a TensorStaticInfoCastOp for any users that might require the exact
   // previous type.
   Value originalTypedValue;
-  for (OpOperand &use : result.getUses()) {
+  for (OpOperand &use : llvm::make_early_inc_range(result.getUses())) {
     if (use.getOwner()
             ->hasTrait<mlir::torch::Torch::OpTrait::AllowsTypeRefinement>()) {
       continue;
@@ -396,6 +412,7 @@ class SimplifyShapeCalculationsPass
     patterns.insert<AbstractlyInterpretListOpsWithinABlock>(context);
     patterns.insert<DecomposeAtenSizeOp>(context);
     patterns.insert<RefineShapeCalculateOp>(context);
+    patterns.insert<FoldPrimUncheckedCastOp>(context);
 
     PrimIfOp::getCanonicalizationPatterns(patterns, context);
     Aten__Getitem__TOp::getCanonicalizationPatterns(patterns, context);

@@ -52,6 +52,8 @@ static MlirType getMlirTypeForTorchScalarTypeRaw(MlirContext context,
     return mlirF16TypeGet(context);
   case ScalarType::QInt8:
     return torchMlirTorchQInt8TypeGet(context);
+  case ScalarType::QUInt8:
+    return torchMlirTorchQUInt8TypeGet(context);
   default: {
     return {nullptr};
   }
@@ -149,8 +151,15 @@ MlirType torch_mlir::getMlirTypeFromTorchType(MlirLocation loc,
       auto shapeSymbol = symbolicShape[i];
       dims[i] = shapeSymbol.is_static() ? shapeSymbol.static_size() : -1;
     }
+
+    // `std::vector`'s `.data()` method can return nullptr when the
+    // size is 0. This triggers the "nothing known about sizes" case in
+    // the C API constructor, when we want the "we know we have 0 sizes"
+    // case. So use a dummy data pointer.
+    int64_t dummy;
+    int64_t *dimsData = dims.size() == 0 ? &dummy : dims.data();
     return torchMlirTorchNonValueTensorTypeGet(context, dims.size(),
-                                               /*optionalSizes=*/dims.data(),
+                                               /*optionalSizes=*/dimsData,
                                                /*optionalDtype=*/
                                                elementType);
   }
@@ -295,7 +304,8 @@ MlirAttribute torch_mlir::convertTensorToMlirElementsAttr(at::Tensor tensor,
   // TODO: Support bool tensors.
   // TODO: More import formats in C-API.
   auto numElements = tensor.numel();
-  auto tensorData = tensor.data_ptr();
+  auto tensor_cpu = tensor.cpu().contiguous();
+  auto tensorData = tensor_cpu.data_ptr();
   switch (tensor.scalar_type()) {
   case ScalarType::Int:
     return mlirDenseElementsAttrInt32Get(
@@ -320,6 +330,9 @@ MlirAttribute torch_mlir::convertTensorToMlirElementsAttr(at::Tensor tensor,
   case ScalarType::QInt8:
     return mlirDenseElementsAttrInt8Get(
         shapedType, numElements, static_cast<const int8_t *>(tensorData));
+  case ScalarType::QUInt8:
+    return mlirDenseElementsAttrUInt8Get(
+        shapedType, numElements, static_cast<const uint8_t *>(tensorData));
   case ScalarType::BFloat16:
     return mlirDenseElementsAttrBFloat16Get(
         shapedType, numElements, static_cast<const uint16_t *>(tensorData));

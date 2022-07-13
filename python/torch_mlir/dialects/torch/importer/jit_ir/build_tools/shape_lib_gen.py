@@ -6,9 +6,11 @@
 import string
 from typing import List, Optional, Any, Tuple, Union
 
-import os
 import argparse
+import importlib
 import inspect
+import os
+import re
 
 import torch
 from torch import device, Tensor
@@ -284,6 +286,9 @@ def not_present_in_registry(f):
 # Shape functions
 # ==============================================================================
 
+def aten〇triu(self: List[int], diagonal: int = 0) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
 def aten〇tanh(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
@@ -514,9 +519,11 @@ def aten〇max〇dim(self: List[int], dim: int, keepdim: bool = False) -> Tuple[
 def aten〇mean〇dim(self: List[int], dim: List[int], keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
     return upstream_shape_functions.mean_dim(self, dim, keepdim, dtype)
 
-def aten〇sum〇dim_IntList(self: List[int], dim: List[int], keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
-    return upstream_shape_functions.mean_dim(self, dim, keepdim, dtype)
-
+def aten〇sum〇dim_IntList(self: List[int], dim: Optional[List[int]], keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
+    if dim is None:
+        return upstream_shape_functions.mean_dim(self, [], keepdim, dtype)
+    else:
+        return upstream_shape_functions.mean_dim(self, dim, keepdim, dtype)
 
 def aten〇permute(self: List[int], dims: List[int]) -> List[int]:
     return upstream_shape_functions.permute(self, dims)
@@ -526,6 +533,12 @@ def aten〇transpose〇int(self: List[int], dim0: int, dim1: int) -> List[int]:
 
 def aten〇t(self: List[int]) -> List[int]:
     return upstream_shape_functions.transpose(self, 0, 1)
+
+def aten〇numpy_T(self: List[int]) -> List[int]:
+    result_shape: List[int] = []
+    for i in self:
+        result_shape.insert(0, i)
+    return result_shape
 
 def aten〇matmul(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.matmul(self, other)
@@ -559,6 +572,20 @@ def aten〇baddbmm(self: List[int], batch1: List[int], batch2: List[int], beta: 
 
 def aten〇embedding(weight: List[int], indices: List[int], padding_idx: int = -1, scale_grad_by_freq: bool = False, sparse: bool = False) -> List[int]:
     return upstream_shape_functions.embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse)
+
+def aten〇repeat(self: List[int], repeats: List[int]) -> List[int]:
+    assert len(repeats) >= len(self)
+    ndim = len(repeats)
+    tensor_dim = len(self)
+    if ndim == 0:
+        return upstream_shape_functions._copy(self)
+    out: List[int] = []
+    leading_rank = ndim - tensor_dim
+    for i in range(leading_rank):
+        out.append(repeats[i])
+    for i in range(tensor_dim):
+        out.append(self[i] * repeats[i + leading_rank])
+    return out
 
 def aten〇expand(self: List[int], size: List[int], implicit: bool = False) -> List[int]:
     return upstream_shape_functions.expand(self, size)
@@ -692,11 +719,7 @@ def aten〇_to_copy(self: List[int], dtype: Optional[int] = None, layout: Option
 def aten〇masked_fill〇Scalar(self: List[int], mask: List[int], value: float) -> List[int]:
     return upstream_shape_functions.unary(self)
 
-@not_present_in_registry
 def aten〇zero(self: List[int]) -> List[int]:
-    return self
-
-def aten〇zero〇functional(self: List[int]) -> List[int]:
     return self
 
 @not_present_in_registry
@@ -757,6 +780,9 @@ def aten〇div〇Tensor(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
 
 def aten〇div〇Tensor_mode(self: List[int], other: List[int], rounding_mode: Optional[str]) -> List[int]:
+    return upstream_shape_functions.broadcast(self, other)
+
+def aten〇floor_divide(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
 
 def aten〇__and__〇Tensor(self: List[int], other: List[int]) -> List[int]:
@@ -857,6 +883,9 @@ def aten〇conv2d(input: List[int], weight: List[int], bias: Optional[List[int]]
 
 def aten〇convolution(input: List[int], weight: List[int], bias: Optional[List[int]], stride: List[int], padding: List[int], dilation: List[int], transposed: bool, output_padding: List[int], groups: int) -> List[int]:
     return upstream_shape_functions.conv_output_size(input, weight, bias, stride, padding, dilation, groups)
+
+def aten〇_convolution(input: List[int], weight: List[int], bias: Optional[List[int]], stride: List[int], padding: List[int], dilation: List[int], transposed: bool, output_padding: List[int], groups: int, benchmark: bool, deterministic: bool, cudnn_enabled: bool, allow_tf32: bool) -> List[int]:
+    return aten〇convolution(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups)
     
 def aten〇flip(self: List[int], dims: List[int]) -> List[int]:
     return self
@@ -873,8 +902,14 @@ def aten〇batch_norm(input: List[int], weight: Optional[List[int]], bias: Optio
 def aten〇slice〇Tensor(self: List[int], dim: int = 0, start: Optional[int] = None, end: Optional[int] = None, step: int = 1) -> List[int]:
     return upstream_shape_functions.slice(self, dim, start, end, step)
 
+def aten〇slice_scatter(self: List[int], src: List[int], dim: int = 0, start: Optional[int] = None, end: Optional[int] = None, step: int = 1) -> List[int]:
+    return self
+
 def aten〇select〇int(self: List[int], dim: int, index: int) -> List[int]:
     return upstream_shape_functions.select(self, dim, index)
+
+def aten〇select_scatter(self: List[int], src: List[int], dim: int, index: int) -> List[int]:
+    return self
 
 def aten〇index_select(self: List[int], dim: int, index: List[int]) -> List[int]:
     return upstream_shape_functions.index_select(self, dim, index)
@@ -962,11 +997,14 @@ def aten〇constant_pad_nd(self: List[int], pad: List[int], value: float = 0) ->
 def aten〇pad(self: List[int], pad: List[int], mode: str = "constant", value: Optional[float] = None) -> List[int]:
     return pad_shape_fn(self, pad)
 
+# See https://numpy.org/doc/stable/user/basics.indexing.html
 @check_shape_function([
     Invocation(TensorOfShape(2), [LongTensorOfShape(4)]), # Basic case.
     Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(4)]), # More dimensions.
     Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(6, 4)]), # Multidimensional index tensor along a dimension.
     Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), None]), # Explicit None value.
+    Invocation(TensorOfShape(2, 3, 4, 5), [None, LongTensorOfShape(4), LongTensorOfShape(4)]), # Indexing tensors on consecutive dimensions.
+    Invocation(TensorOfShape(2, 3, 4, 5), [None, LongTensorOfShape(4), None, LongTensorOfShape(4)]), # Indexing tensors on non-consecutive dimensions.
     Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4, 5, 6), LongTensorOfShape(1, 5, 1)]), # Broadcasting of index tensors.
     Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4)]), # Fewer index tensors than dimensions.
     ErrorInvocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(4), LongTensorOfShape(4)]), # More index tensors than dimensions.
@@ -974,10 +1012,44 @@ def aten〇pad(self: List[int], pad: List[int], mode: str = "constant", value: O
 def aten〇index〇Tensor(self: List[int], indices: List[Optional[List[int]]]) -> List[int]:
     assert len(indices) <= len(self), "More indices than dimensions to index"
     broadcasted_shape: List[int] = []
-    for index_tensor_shape in indices:
+    unused_dim_sizes: List[int] = []
+    for i in range(len(self)):
+        if i >= len(indices):
+            unused_dim_sizes.append(self[i])
+        else:
+            index_tensor_shape = indices[i]
+            if index_tensor_shape is not None:
+                broadcasted_shape = upstream_shape_functions.broadcast(broadcasted_shape, index_tensor_shape)
+            else:
+                unused_dim_sizes.append(self[i])
+
+    if len(unused_dim_sizes) == 0:
+        return broadcasted_shape
+
+    prev_index_tensor_location = -1
+    first_index_tensor_location = -1
+    index_tensors_are_together = True
+    for e, index_tensor_shape in enumerate(indices):
         if index_tensor_shape is not None:
-            broadcasted_shape = upstream_shape_functions.broadcast(broadcasted_shape, index_tensor_shape)
-    return broadcasted_shape
+            if first_index_tensor_location == -1:
+                first_index_tensor_location = e
+                prev_index_tensor_location = e
+            elif e - prev_index_tensor_location != 1:
+                index_tensors_are_together = False
+
+    if not index_tensors_are_together:
+        return broadcasted_shape + unused_dim_sizes
+
+    # If index tensors are all in consecutive dimensions, the broadcasted
+    # shape is inserted in the location of the consecutive index tensors.
+    result_shape: List[int] = []
+    for i in range(first_index_tensor_location):
+        result_shape.append(unused_dim_sizes[i])
+    for broadcasted_size in broadcasted_shape:
+        result_shape.append(broadcasted_size)
+    for i in range(first_index_tensor_location, len(unused_dim_sizes)):
+        result_shape.append(unused_dim_sizes[i])
+    return result_shape
 
 def aten〇cat(tensors: List[List[int]], dim: int = 0) -> List[int]:
     return upstream_shape_functions.cat(tensors, dim)
@@ -1029,6 +1101,10 @@ def aten〇linalg_vector_norm(self: List[int], ord: float = 2, dim: Optional[Lis
         dim = list(range(len(self)))
     return upstream_shape_functions.mean_dim(self, dim, keepdim, dtype)
 
+# TODO: Re-enable after MacOS support is fixed for the extension.
+#def _torch_mlir_custom_op_example〇identity(t: List[int]) -> List[int]:
+#    return upstream_shape_functions.unary(t)
+
 # ==============================================================================
 # Shape library generator main().
 # ==============================================================================
@@ -1049,7 +1125,17 @@ def _verify_signature_matches_registry(f, registry: Registry):
     if signature != expected_signature:
         raise ValueError(f"Signature mismatch for {f.__name__!r}: expected {expected_signature!r}, got {signature!r}")
 
+def _maybe_import_op_extensions(args: argparse.Namespace):
+    extension_string = str.strip(args.pytorch_op_extensions)
+    if len(extension_string) > 0:
+        extension_names = extension_string.split(",")
+        for name in extension_names:
+            # Registration of new PyTorch ops should be a side-effect of
+            # importing these modules, so we don't need the return value.
+            importlib.import_module(name)
+
 def main(args):
+    _maybe_import_op_extensions(args)
     mb = ModuleBuilder()
     # We use the registry to ensure that the shape functions are consistent
     # with the ops.
@@ -1068,12 +1154,15 @@ def main(args):
     pm.run(mb.module)
     # Munge the IR a bit to make it more systematically accessible.
     asm = mb.module.operation.get_asm()
+    # We'd like a unique function prefix to avoid collisions with user-
+    # defined symbols. Since all of our shape functions conveniently have
+    # a `〇` in them, we replace the torch namespace with our prefix. E.g.:
+    # __torch__.aten〇add〇Scalar -> __torch_mlir_shape_fn.aten〇add〇Scalar
+    asm = re.sub(r"__torch__\.([^.(]+)\\E3\\80\\87",
+                 r"__torch_mlir_shape_fn.\1\\E3\\80\\87",
+                 asm) 
     # Put the `〇` back to a regular `.`.
     asm = asm.replace("\\E3\\80\\87", ".")
-    # Use a unique prefix on functon names to avoid collisions with
-    # user-defined symbols.
-    asm = asm.replace("__torch__.aten", "__torch_mlir_shape_fn.aten")
-    asm = asm.replace("__torch__.prim", "__torch_mlir_shape_fn.prim")
 
     # Write out the shape library .cpp file.
     shape_lib_cpp_file = os.path.join(
@@ -1121,6 +1210,11 @@ def _create_argparse() -> argparse.ArgumentParser:
         "--torch_transforms_cpp_dir",
         required=True,
         help="Directory containing the Torch transforms cpp files")
+    parser.add_argument(
+        "--pytorch_op_extensions",
+        type=str,
+        default="",
+        help="An optional, comma-separated list of Python modules which register additional PyTorch operators upon being imported. These modules can be used to build a torch-mlir which supports PyTorch extensions.")
     return parser
 
 if __name__ == "__main__":

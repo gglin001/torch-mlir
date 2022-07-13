@@ -11,8 +11,8 @@ COMMON_TORCH_MLIR_LOWERING_XFAILS = {
     "TableBatchEmbeddingModule_basic",
     "MobilenetV2Module_basic",
     "MobilenetV3Module_basic",
-    "ConvolutionModule3D_basic",
-    "ConvolutionModule1D_basic",
+    "Convolution3DModule_basic",
+    "Convolution1DModule_basic",
     "MaxPool2dWith3dInputModule_basic",
     "MaxPool2dWithIndicesWith3dInputModule_basic",
 }
@@ -53,3 +53,5 @@ def register_all_tests():
     from . import return_types
     from . import control_flow
     from . import stats
+    # TODO: Re-enable after MacOS support is fixed for the extension.
+    #from . import custom_op_example

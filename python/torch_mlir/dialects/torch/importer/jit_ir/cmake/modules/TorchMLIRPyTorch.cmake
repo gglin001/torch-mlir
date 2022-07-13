@@ -59,17 +59,64 @@ function(TorchMLIRConfigurePyTorch)
     execute_process(
       COMMAND ${Python3_EXECUTABLE}
       -c "import torch; import sys; sys.stdout.write('1' if torch.compiled_with_cxx11_abi() else '0')"
+      RESULT_VARIABLE _result
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
       OUTPUT_VARIABLE _use_cxx11_abi)
+    if(_result)
+      message(FATAL_ERROR "Failed to determine C++ Dual ABI")
+    endif()
     message(STATUS "PyTorch C++ Dual ABI setting: \"${_use_cxx11_abi}\"")
 
     # Check ABI compatibility version
     execute_process(
       COMMAND ${Python3_EXECUTABLE}
       -c "import torch; import sys; abi=torch._C._PYBIND11_BUILD_ABI; abi.startswith('_cxxabi10') or sys.exit(1); sys.stdout.write(str(abi[-2:]))"
+      RESULT_VARIABLE _result
       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
       OUTPUT_VARIABLE _cxx_abi_version)
+    if(_result)
+      message(FATAL_ERROR "Failed to determine C++ ABI version")
+    endif()
     message(STATUS "PyTorch C++ ABI version: \"${_cxx_abi_version}\"")
+
+    # Specialize compile flags for compiler
+    if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
+      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi} -fabi-version=${_cxx_abi_version}")
+    elseif(${CMAKE_CXX_COMPILER_ID} STREQUAL "Clang")
+      set(TORCH_CXXFLAGS "-D_GLIBCXX_USE_CXX11_ABI=${_use_cxx11_abi} -U__GXX_ABI_VERSION -D__GXX_ABI_VERSION=10${_cxx_abi_version} '-DPYBIND11_COMPILER_TYPE=\"_gcc\"'")
+    else()
+      message(WARNING "Unrecognized compiler. Cannot determine ABI flags.")
+      return()
+    endif()
+    set(TORCH_CXXFLAGS "${TORCH_CXXFLAGS}" PARENT_SCOPE)
+  endif()
+endfunction()
+
+function(TorchMLIRConfigureLibTorch)
+  message(STATUS "Checking LibTorch ABI settings...")
+  if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+    message(STATUS "libtorch_python is ${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so")
+    # Check dual ABI setting first
+    execute_process(
+      COMMAND bash "-c" "cat ${TORCH_INSTALL_PREFIX}/share/cmake/Torch/TorchConfig.cmake | egrep -o '_GLIBCXX_USE_CXX11_ABI=[0-1]' | egrep -o '.$'"
+      RESULT_VARIABLE _result
+      OUTPUT_VARIABLE _use_cxx11_abi
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(_result)
+      message(FATAL_ERROR "Failed to determine LibTorch C++ Dual ABI")
+    endif()
+    message(STATUS "LibTorch C++ Dual ABI setting: \"${_use_cxx11_abi}\"")
+
+    # Check ABI compatibility version
+    execute_process(
+      COMMAND bash "-c" "strings ${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so | egrep '^_cxxabi[0-9]{4}' | egrep -o '..$'"
+      RESULT_VARIABLE _result
+      OUTPUT_VARIABLE _cxx_abi_version
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(_result)
+      message(FATAL_ERROR "Failed to determine LibTorch C++ ABI version")
+    endif()
+    message(STATUS "LibTorch C++ ABI version: \"${_cxx_abi_version}\"")
 
     # Specialize compile flags for compiler
     if(${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")

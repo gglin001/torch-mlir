@@ -24,20 +24,6 @@ using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
 
-// see https://github.com/pytorch/pytorch/blob/master/c10/core/ScalarType.h#L28
-static int64_t getDtypeIntegerFromMlirType(Type dtype) {
-  if (dtype.isa<Float32Type>())
-    return 6;
-
-  if (auto integerType = dtype.dyn_cast<IntegerType>()) {
-    if (integerType.isSignedInteger(64))
-      return 4;
-    if (integerType.isSignlessInteger(1))
-      return 11;
-  }
-  return -1;
-}
-
 //===----------------------------------------------------------------------===//
 // Utilities
 //===----------------------------------------------------------------------===//
@@ -96,6 +82,29 @@ static IntegerAttr getI64IntegerAttr(MLIRContext *context, int64_t value) {
 
 static FloatAttr getF64FloatAttr(MLIRContext *context, double value) {
   return FloatAttr::get(Float64Type::get(context), value);
+}
+
+static Value getScalarValue(Value input, Location loc,
+                            PatternRewriter &rewriter) {
+  Value scalar = nullptr;
+  if (auto valueTensorLiteralOp = input.getDefiningOp<ValueTensorLiteralOp>()) {
+    if (valueTensorLiteralOp &&
+        getTensorRank(valueTensorLiteralOp.getResult()) == 0) {
+      auto tensorType =
+          valueTensorLiteralOp.value().getType().cast<RankedTensorType>();
+      if (tensorType.getElementType().isa<mlir::IntegerType>()) {
+        auto val = valueTensorLiteralOp.value()
+                       .cast<DenseElementsAttr>()
+                       .getSplatValue<int64_t>();
+        scalar = rewriter.create<Torch::ConstantIntOp>(
+            loc, rewriter.getI64IntegerAttr(val));
+      }
+    }
+  } else if (auto primNumToTensorScalarOp =
+                 input.getDefiningOp<PrimNumToTensorScalarOp>()) {
+    scalar = primNumToTensorScalarOp.a();
+  }
+  return scalar;
 }
 
 //===----------------------------------------------------------------------===//
@@ -237,8 +246,8 @@ LogicalResult ClassTypeOp::verify() {
 // PrimLoopOp
 //===----------------------------------------------------------------------===//
 
-OperandRange PrimLoopOp::getSuccessorEntryOperands(unsigned index) {
-  assert(index == 0);
+OperandRange PrimLoopOp::getSuccessorEntryOperands(Optional<unsigned int> index) {
+  assert(index.hasValue() && index.value() == 0);
   return iterArgsInit();
 }
 
@@ -764,17 +773,101 @@ void AtenLenTOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 //===----------------------------------------------------------------------===//
+// AtenLenStrOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenLenStrOp::fold(ArrayRef<Attribute> operands) {
+  if(auto stringConstruct = s().getDefiningOp<ConstantStrOp>())
+    return getI64IntegerAttr(getContext(), stringConstruct.valueAttr().getValue().size());
+
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// AtenAddTensorOp
+//===----------------------------------------------------------------------===//
+
+void AtenAddTensorOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                  MLIRContext *context) {
+  patterns.add(+[](AtenAddTensorOp op, PatternRewriter &rewriter) {
+    // The lhs and rhs of the add.tensor op should be 0d tensors for the
+    // canonicalization to be carried out.
+    // `aten.add.tensor(self, other, alpha)` is canonicalized to
+    // `aten.add.int(self, aten.mul.int(other, alpha))`.
+
+    Value lhs = getScalarValue(op.self(), op.getLoc(), rewriter);
+    if (!lhs)
+      return rewriter.notifyMatchFailure(op, "lhs scalar is empyty");
+    if (!lhs.getType().isa<Torch::IntType>())
+      return rewriter.notifyMatchFailure(op, "lhs scalar is not IntType");
+
+    Value rhs = getScalarValue(op.other(), op.getLoc(), rewriter);
+    if (!rhs)
+      return rewriter.notifyMatchFailure(op, "rhs scalar is empyty");
+    if (!rhs.getType().isa<Torch::IntType>())
+      return rewriter.notifyMatchFailure(op, "rhs scalar is not IntType");
+
+    Value mul = rewriter.create<AtenMulIntOp>(op->getLoc(), rhs, op.alpha());
+    Value add = rewriter.create<AtenAddIntOp>(op->getLoc(), lhs, mul);
+    rewriter.replaceOpWithNewOp<PrimNumToTensorScalarOp>(
+        op, op.self().getType(), add);
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
 // AtenSizeOp
 //===----------------------------------------------------------------------===//
+
+// Traces at most 6 parents of `value` to determine the tensor type with known
+// dimension size or returns failure if such a type was not found.  If `dim` is
+// `None`, then all dimension's sizes must be known.
+static FailureOr<BaseTensorType>
+traceKnownSizeTensorType(Value value, llvm::Optional<int64_t> dim) {
+  // Function to check if we found a type that contains the queried information.
+  auto foundType = [](BaseTensorType tensorType, llvm::Optional<int64_t>(dim)) {
+    if (!tensorType.hasSizes())
+      return false;
+
+    if (dim == llvm::None)
+      return tensorType.areAllSizesKnown();
+
+    // If the dimension value is negative, then convert it to a positive value.
+    ArrayRef<int64_t> sizes = tensorType.getSizes();
+    *dim = toPositiveDim(*dim, sizes.size());
+    return isValidDim(*dim, sizes.size()) && sizes[*dim] != kUnknownSize;
+  };
+
+  // Limit the loop count to 6 to avoid indefinite compilation times from
+  // unbounded IR traversals.
+  for (auto idx = 0; idx < 6; ++idx) {
+    if (!value || !value.getType().isa<BaseTensorType>())
+      return failure();
+
+    auto tensorType = value.getType().cast<BaseTensorType>();
+    if (foundType(tensorType, dim))
+      return tensorType;
+
+    auto op = value.getDefiningOp();
+    if (!op || !isa<CopyToValueTensorOp, CopyToNonValueTensorOp,
+                    TensorStaticInfoCastOp>(op))
+      return failure();
+
+    // In all ops of interest to us, the source tensor is operand #0.
+    value = op->getOperand(0);
+  }
+
+  return failure();
+}
 
 void AtenSizeOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
                                              MLIRContext *context) {
   patterns.add(+[](AtenSizeOp op, PatternRewriter &rewriter) {
-    auto type = op.getOperand().getType().dyn_cast<BaseTensorType>();
-    if (!type || !type.areAllSizesKnown())
+    auto type = traceKnownSizeTensorType(op.getOperand(), llvm::None);
+    if (failed(type))
       return rewriter.notifyMatchFailure(op, "all sizes not known");
     SmallVector<Value> listElements;
-    for (int64_t size : type.getSizes()) {
+    for (int64_t size : type->getSizes()) {
       listElements.push_back(rewriter.create<Torch::ConstantIntOp>(
           op->getLoc(), rewriter.getI64IntegerAttr(size)));
     }
@@ -801,18 +894,15 @@ void AtenSizeOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 //===----------------------------------------------------------------------===//
 
 OpFoldResult AtenSizeIntOp::fold(ArrayRef<Attribute> operands) {
-  auto type = getOperand(0).getType().dyn_cast<BaseTensorType>();
-  if (!type || !type.hasSizes())
+  int64_t dim;
+  if (!matchPattern(this->dim(), m_TorchConstantInt(&dim)))
     return nullptr;
-
-  llvm::Optional<int64_t> dimOpt = matchLegalConstantIndexIntoListOfSize(
-      this->dim(), type.getSizes().size());
-  if (!dimOpt)
+  auto type = traceKnownSizeTensorType(this->self(), dim);
+  if (failed(type))
     return nullptr;
-  if (type.getSizes()[*dimOpt] == kUnknownSize)
-    return nullptr;
-  return IntegerAttr::get(IntegerType::get(getContext(), 64),
-                          type.getSizes()[*dimOpt]);
+  ArrayRef<int64_t> sizes = type->getSizes();
+  dim = toPositiveDim(dim, sizes.size());
+  return IntegerAttr::get(IntegerType::get(getContext(), 64), sizes[dim]);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1529,6 +1619,37 @@ OpFoldResult Aten__Contains__StrOp::fold(ArrayRef<Attribute> operands) {
   return nullptr;
 }
 
+//===----------------------------------------------------------------------===//
+// Aten__Contains__IntListOp
+//===----------------------------------------------------------------------===//
+
+static bool isListConstructNotModified(Value torchList) {
+  return llvm::all_of(torchList.getUsers(), [](Operation *op) {
+        return isa<Aten__Contains__IntListOp>(op);
+      });
+}
+
+OpFoldResult Aten__Contains__IntListOp::fold(ArrayRef<Attribute> operands) {
+  auto itemConstruct = item();
+  if (!isListConstructNotModified(l()))
+    return nullptr;
+
+  int64_t item;
+  SmallVector<int64_t> list;
+
+  if (!matchPattern(itemConstruct, m_TorchConstantInt(&item)))
+    return nullptr;
+
+  if (!matchPattern(l(), m_TorchConstantIntList(list)))
+    return nullptr;
+
+  for (auto elem : list) {
+    if (elem == item)
+      return getI1IntegerAttr(getContext(), true);
+  }
+  return getI1IntegerAttr(getContext(), false);
+}
+
 using BinaryIntOperatorFn = std::function<int64_t(int64_t, int64_t)>;
 template <typename OpTy>
 static OpFoldResult atenBinaryIntOperatorFoldHelper(OpTy op,
@@ -1621,9 +1742,9 @@ OpFoldResult AtenSqrtIntOp::fold(ArrayRef<Attribute> operands) {
 OpFoldResult PrimDtypeOp::fold(ArrayRef<Attribute> operands) {
   BaseTensorType tensorType = a().getType().cast<BaseTensorType>();
   if (tensorType.hasDtype()) {
-    int64_t dtypeInt = getDtypeIntegerFromMlirType(tensorType.getDtype());
-    if (dtypeInt != -1)
-      return getI64IntegerAttr(getContext(), dtypeInt);
+    torch_upstream::ScalarType scalarType =
+        Torch::getScalarTypeForType(tensorType.getDtype());
+    return getI64IntegerAttr(getContext(), static_cast<int64_t>(scalarType));
   }
   return nullptr;
 }

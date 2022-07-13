@@ -8,6 +8,7 @@
 from typing import List, Optional, TextIO
 
 import argparse
+import importlib
 import logging
 import os
 import sys
@@ -61,11 +62,18 @@ def get_ods_type(type: str):
     return ods_type
 
 
+def _name_thunk() -> None:
+  # Strictly exists for _get_main_module_name to harvest its __module__.
+  pass
 def _get_main_module_name() -> str:
-    # pytype: disable=attribute-error
-    return sys.modules["__main__"].__loader__.name
-    # pytype: enable=attribute-error
-
+    # If a Python module is loaded interactively or as part of a module
+    # directory, it uses a BuiltinImporter. If loaded from a file, it uses
+    # the SourceFileLoader. These two objects have different attributes.
+    loader = sys.modules["__main__"].__loader__
+    try:
+        return loader.name # pytype: disable=attribute-error
+    except AttributeError:
+        return _name_thunk.__module__
 
 ODS_BANNER = f"""//===-------------------------------------------------------*- tablegen -*-===//
 //
@@ -247,7 +255,6 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
             "aten::floor : (Tensor) -> (Tensor)",
             "aten::ceil : (Tensor) -> (Tensor)",
             "aten::bitwise_not : (Tensor) -> (Tensor)",
-            "aten::add.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)",
             "aten::sub.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)",
             "aten::mul.Tensor : (Tensor, Tensor) -> (Tensor)",
             "aten::div.Tensor : (Tensor, Tensor) -> (Tensor)",
@@ -281,11 +288,12 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
             "aten::threshold : (Tensor, Scalar, Scalar) -> (Tensor)",
             "aten::square : (Tensor) -> (Tensor)",
             "aten::unsqueeze : (Tensor, int) -> (Tensor)",
-            "aten::zero.functional : (Tensor) -> (Tensor)",
+            "aten::zero : (Tensor) -> (Tensor)",
     ]:
         emit_with_mutating_variants(key)
     # Elementwise tensor compute ops that don't have the standard mutating
     # variants.
+    emit_with_mutating_variants("aten::add.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)", has_canonicalizer=True)    
     emit("aten::addcmul : (Tensor, Tensor, Tensor, Scalar) -> (Tensor)")
     emit("aten::addcdiv : (Tensor, Tensor, Tensor, Scalar) -> (Tensor)")
     emit("aten::maximum : (Tensor, Tensor) -> (Tensor)")
@@ -294,6 +302,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::gelu : (Tensor, str) -> (Tensor)")
     emit("aten::pow.Tensor_Scalar : (Tensor, Scalar) -> (Tensor)")
     emit("aten::threshold_backward : (Tensor, Tensor, Scalar) -> (Tensor)")
+    emit("aten::floor_divide : (Tensor, Tensor) -> (Tensor)")
 
     # Ops without value semantics but the corresponding without trailing
     # underscore variant doesn't exist.
@@ -320,6 +329,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     )
     emit("aten::convolution : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int) -> (Tensor)")
     emit("aten::convolution_overrideable : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int) -> (Tensor)")
+    emit("aten::_convolution : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int, bool, bool, bool, bool) -> (Tensor)")
     emit("aten::flip : (Tensor, int[]) -> (Tensor)")
     emit(
         "aten::native_batch_norm : (Tensor, Tensor?, Tensor?, Tensor?, Tensor?, bool, float, float) -> (Tensor, Tensor, Tensor)"
@@ -383,6 +393,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::dim : (Tensor) -> (int)", has_folder=True)
     emit("aten::size : (Tensor) -> (int[])", has_canonicalizer=True)
     emit("aten::Bool.Tensor : (Tensor) -> (bool)")
+    emit("aten::is_floating_point : (Tensor) -> (bool)")
     emit("aten::ones : (int[], int?, int?, Device?, bool?) -> (Tensor)")
     emit("aten::new_ones : (Tensor, int[], int?, int?, Device?, bool?) -> (Tensor)")
     emit("aten::zeros : (int[], int?, int?, Device?, bool?) -> (Tensor)")
@@ -426,10 +437,11 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::_reshape_alias : (Tensor, int[], int[]) -> (Tensor)")
     emit("aten::resize_ : (Tensor, int[], int?) -> (Tensor)")
     emit("aten::select.int : (Tensor, int, int) -> (Tensor)")
+    emit("aten::select_scatter : (Tensor, Tensor, int, int) -> (Tensor)")
     emit("aten::size.int : (Tensor, int) -> (int)", has_folder=True)
     emit("aten::stack : (Tensor[], int) -> (Tensor)")
     emit("aten::sum : (Tensor, int?) -> (Tensor)")
-    emit("aten::sum.dim_IntList : (Tensor, int[], bool, int?) -> (Tensor)")
+    emit("aten::sum.dim_IntList : (Tensor, int[]?, bool, int?) -> (Tensor)")
     emit("aten::max : (Tensor) -> (Tensor)")
     emit("aten::max.dim : (Tensor, int, bool) -> (Tensor, Tensor)")
     emit("aten::to.dtype : (Tensor, int, bool, bool, int?) -> (Tensor)", has_folder=True)
@@ -444,6 +456,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::where.ScalarOther : (Tensor, Tensor, Scalar) -> (Tensor)")
     emit("aten::where.ScalarSelf : (Tensor, Scalar, Tensor) -> (Tensor)")
     emit("aten::slice.Tensor : (Tensor, int, int?, int?, int) -> (Tensor)")
+    emit("aten::slice_scatter : (Tensor, Tensor, int, int?, int?, int) -> (Tensor)")
     emit("aten::len.Tensor : (Tensor) -> (int)")
     emit("aten::cpu : (Tensor) -> (Tensor)")
     emit("aten::gather : (Tensor, int, Tensor, bool) -> (Tensor)")
@@ -455,12 +468,14 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit_with_mutating_variants("aten::dropout : (Tensor, float, bool) -> (Tensor)")
     emit("aten::native_dropout : (Tensor, float, bool?) -> (Tensor, Tensor)")
     emit("aten::t : (Tensor) -> (Tensor)")
+    emit("aten::numpy_T : (Tensor) -> (Tensor)")
     emit("aten::full : (int[], Scalar, int?, int?, Device?, bool?) -> (Tensor)")
     emit("aten::full_like : (Tensor, Scalar, int?, int?, Device?, bool?, int?) -> (Tensor)")
     emit_with_mutating_variants("aten::baddbmm : (Tensor, Tensor, Tensor, Scalar, Scalar) -> (Tensor)")
 
     # Dict ops.
     emit("aten::__contains__.str : (Dict(str, t), str) -> (bool)", has_folder=True)
+    emit("aten::__contains__.int_list : (int[], int) -> (bool)", has_folder=True)
     emit("aten::__getitem__.Dict_str : (Dict(str, t), str) -> (t)", has_folder=True)
     emit("aten::_set_item.str : (Dict(str, t), str, t) -> ()")
     emit("aten::keys.str : (Dict(str, t)) -> (str[])")
@@ -481,6 +496,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     # Str ops.
     emit("aten::add.str : (str, str) -> (str)")
     emit("aten::eq.str : (str, str) -> (bool)", has_folder=True)
+    emit("aten::len.str : (str) -> (int)", has_folder=True)
     emit("aten::str : (t) -> (str)")
     emit("aten::format : (...) -> (str)")
     emit("aten::join : (str, str[]) -> (str)")
@@ -581,13 +597,32 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
         "quantized::linear : (Tensor, __torch__.torch.classes.quantized.LinearPackedParamsBase, float, int) -> (Tensor)",
         traits=["HasValueSemantics"])
 
+    # ==========================================================================
+    # `_torch_mlir_custom_op_example::` namespace.
+    #
+    # This is a demonstration of supporting an operation defined in a PyTorch
+    # extension.
+    # ==========================================================================
+
+    # TODO: Re-enable after MacOS support is fixed for the extension.
+    #emit("_torch_mlir_custom_op_example::identity : (Tensor) -> (Tensor)")
+
 
 def dump_registered_ops(outfile: TextIO, registry: Registry):
     for _, v in sorted(registry.by_unique_key.items()):
         outfile.write(repr(v))
 
+def _maybe_import_op_extensions(args: argparse.Namespace):
+    extension_string = str.strip(args.pytorch_op_extensions)
+    if len(extension_string) > 0:
+        extension_names = extension_string.split(",")
+        for name in extension_names:
+            # Registration of new PyTorch ops should be a side-effect of
+            # importing these modules, so we don't need the return value.
+            importlib.import_module(name)
 
 def main(args: argparse.Namespace):
+    _maybe_import_op_extensions(args)
     registry = Registry.load()
     if args.debug_registry_dump:
         with open(args.debug_registry_dump, "w") as debug_registry_dump:
@@ -608,6 +643,11 @@ def _create_argparse() -> argparse.ArgumentParser:
     parser.add_argument(
         "--debug_registry_dump",
         help="File to dump the the PyTorch JIT operator registry into")
+    parser.add_argument(
+        "--pytorch_op_extensions",
+        type=str,
+        default="",
+        help="An optional, comma-separated list of Python modules which register additional PyTorch operators upon being imported. These modules can be used to build a torch-mlir which supports PyTorch extensions.")
     return parser
 
 
