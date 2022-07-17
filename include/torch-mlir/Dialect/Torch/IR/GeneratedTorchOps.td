@@ -3884,6 +3884,32 @@ def Torch_AtenVarOp : Torch_Op<"aten.var", [
   }];
 }
 
+def Torch_AtenVarDimOp : Torch_Op<"aten.var.dim", [
+    AllowsTypeRefinement,
+    HasValueSemantics,
+    ReadOnly
+  ]> {
+  let summary = "Generated op for `aten::var.dim : (Tensor, int[], bool, bool) -> (Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$self,
+    AnyTorchListOfTorchIntType:$dim,
+    Torch_BoolType:$unbiased,
+    Torch_BoolType:$keepdim
+  );
+  let results = (outs
+    AnyTorchTensorType:$result
+  );
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDefinition = [{
+    ParseResult AtenVarDimOp::parse(OpAsmParser &parser, OperationState &result) {
+      return parseDefaultTorchOp(parser, result, 4, 1);
+    }
+    void AtenVarDimOp::print(OpAsmPrinter &printer) {
+      printDefaultTorchOp(printer, *this, 4, 1);
+    }
+  }];
+}
+
 def Torch_AtenNllLossForwardOp : Torch_Op<"aten.nll_loss_forward", [
     AllowsTypeRefinement,
     HasValueSemantics,
@@ -7570,7 +7596,6 @@ def Torch_AtenNeBoolOp : Torch_Op<"aten.ne.bool", [
 
 def Torch_Aten__Is__Op : Torch_Op<"aten.__is__", [
     AllowsTypeRefinement,
-    HasValueSemantics,
     ReadOnly
   ]> {
   let summary = "Generated op for `aten::__is__ : (t1, t2) -> (bool)`";
@@ -7595,7 +7620,6 @@ def Torch_Aten__Is__Op : Torch_Op<"aten.__is__", [
 
 def Torch_Aten__Isnot__Op : Torch_Op<"aten.__isnot__", [
     AllowsTypeRefinement,
-    HasValueSemantics,
     ReadOnly
   ]> {
   let summary = "Generated op for `aten::__isnot__ : (t1, t2) -> (bool)`";
