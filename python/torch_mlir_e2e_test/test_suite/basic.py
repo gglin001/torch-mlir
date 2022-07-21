@@ -104,7 +104,7 @@ class IsFloatingPointFloat(torch.nn.Module):
 def IsFloatingPointFloat_True(module, tu: TestUtils):
     module.forward(tu.rand(3))
 
-    	
+
 # ==============================================================================
 
 
@@ -137,7 +137,7 @@ class ContainsIntListFalse(torch.nn.Module):
 @register_test_case(module_factory=lambda: ContainsIntListFalse())
 def ContainsIntList_False(module, tu: TestUtils):
     module.forward()
-        
+
 
 # ==============================================================================
 
@@ -590,6 +590,30 @@ class TensorsConcatModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TensorsConcatModule())
 def TensorsConcatModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 2, 4), tu.rand(2, 1, 4), tu.rand(2, 3, 4))
+
+
+# ==============================================================================
+
+
+class TensorsConcatNegativeDimModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1], torch.float32, True),
+        ([-1, -1, -1], torch.float32, True),
+        ([-1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, x, y, z):
+        return torch.cat([x, y, z], dim=-2)
+
+
+@register_test_case(module_factory=lambda: TensorsConcatNegativeDimModule())
+def TensorsConcatNegativeDimModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(2, 2, 4), tu.rand(2, 1, 4), tu.rand(2, 3, 4))
 
 
@@ -1628,6 +1652,28 @@ class IndexTensorModule3dInput(torch.nn.Module):
 def IndexTensorModule3dInput_basic(module, tu: TestUtils):
     module.forward(tu.rand(5, 4, 3), torch.randint(3, (2, 3)))
 
+
+# ==============================================================================
+
+
+class IndexTensorSelectDimModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1], torch.float32, True),
+        ([-1, -1], torch.int64, True),
+    ])
+    def forward(self, a, ind):
+        return torch.ops.aten.index(a, (None, ind, None))
+
+
+@register_test_case(module_factory=lambda: IndexTensorSelectDimModule())
+def IndexTensorSelectDimModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 4, 6), torch.randint(3, (2, 3)))
 
 # ==============================================================================
 
