@@ -3,7 +3,7 @@
 torch
 
 numpy
-# torchvision
+torchvision
 
 # # Build requirements.
 # pybind11

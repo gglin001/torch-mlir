@@ -8,5 +8,6 @@
     "vadimcn.vscode-lldb",
     "llvm-vs-code-extensions.vscode-clangd",
     "xaver.clang-format",
+    // "cheshirekow.cmake-format",
   ]
 }
