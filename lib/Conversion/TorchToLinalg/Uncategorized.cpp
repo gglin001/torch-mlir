@@ -131,12 +131,20 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     return createCalculationForMathOpWithDtypeConversion<math::ExpOp>(
         b, converter, payloadArgs[0], op);
   }
+  if (isa<AtenExpm1Op>(op)) {
+    return createCalculationForMathOpWithDtypeConversion<math::ExpM1Op>(
+        b, converter, payloadArgs[0], op);
+  }
   if (isa<AtenLogOp>(op)) {
     return createCalculationForMathOpWithDtypeConversion<math::LogOp>(
         b, converter, payloadArgs[0], op);
   }
   if (isa<AtenLog2Op>(op)) {
     return createCalculationForMathOpWithDtypeConversion<math::Log2Op>(
+        b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenLog1pOp>(op)) {
+    return createCalculationForMathOpWithDtypeConversion<math::Log1pOp>(
         b, converter, payloadArgs[0], op);
   }
   if (isa<AtenErfOp>(op)) {
@@ -919,17 +927,18 @@ public:
     if (!isa<AtenTanhOp, AtenReluOp, AtenLeakyReluOp, AtenGeluOp,
              AtenGeluBackwardOp, AtenAddTensorOp, AtenMulTensorOp,
              AtenDivTensorOp, AtenDivTensorModeOp, AtenSubTensorOp,
-             AtenLerpTensorOp, AtenSigmoidOp, AtenExpOp, AtenMinimumOp,
-             AtenMaximumOp, AtenToDtypeOp, AtenClampOp, AtenRsubScalarOp,
-             AtenMulScalarOp, AtenLogOp, AtenErfOp, AtenSqrtOp, AtenFloorOp,
-             AtenPowTensorScalarOp, AtenLog2Op, AtenRsqrtOp, AtenDivScalarOp,
-             AtenAbsOp, AtenReciprocalOp, AtenBitwiseAndTensorOp,
-             AtenGtScalarOp, AtenGeScalarOp, AtenEqScalarOp, AtenLtScalarOp,
-             AtenLeScalarOp, AtenWhereSelfOp, AtenCeilOp, AtenGtTensorOp,
-             AtenEqTensorOp, AtenLtTensorOp, AtenSubScalarOp, AtenAddScalarOp,
-             AtenThresholdOp, AtenThresholdBackwardOp, AtenCloneOp, AtenSinOp,
-             AtenCosOp, AtenNeScalarOp, AtenNegOp, AtenMaskedFillScalarOp,
-             AtenLogicalOrOp, AtenTriuOp>(op))
+             AtenLerpTensorOp, AtenSigmoidOp, AtenExpOp, AtenExpm1Op,
+             AtenMinimumOp, AtenMaximumOp, AtenToDtypeOp, AtenClampOp,
+             AtenRsubScalarOp, AtenMulScalarOp, AtenLogOp, AtenErfOp,
+             AtenSqrtOp, AtenFloorOp, AtenPowTensorScalarOp, AtenLog2Op,
+             AtenLog1pOp, AtenRsqrtOp, AtenDivScalarOp, AtenAbsOp,
+             AtenReciprocalOp, AtenBitwiseAndTensorOp, AtenGtScalarOp,
+             AtenGeScalarOp, AtenEqScalarOp, AtenLtScalarOp, AtenLeScalarOp,
+             AtenWhereSelfOp, AtenCeilOp, AtenGtTensorOp, AtenEqTensorOp,
+             AtenLtTensorOp, AtenSubScalarOp, AtenAddScalarOp, AtenThresholdOp,
+             AtenThresholdBackwardOp, AtenCloneOp, AtenSinOp, AtenCosOp,
+             AtenNeScalarOp, AtenNegOp, AtenMaskedFillScalarOp, AtenLogicalOrOp,
+             AtenTriuOp>(op))
       return rewriter.notifyMatchFailure(op, "not a supported elementwise op");
 
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
@@ -1662,7 +1671,7 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
       AtenSubTensorOp, AtenLerpTensorOp, AtenSigmoidOp, AtenMinimumOp,
       AtenMaximumOp, AtenToDtypeOp, AtenClampOp, AtenRsubScalarOp, AtenLogOp,
       AtenErfOp, AtenSqrtOp, AtenFloorOp, AtenCeilOp, AtenPowTensorScalarOp,
-      AtenLog2Op, AtenRsqrtOp, AtenAbsOp, AtenReciprocalOp,
+      AtenLog2Op, AtenLog1pOp, AtenRsqrtOp, AtenAbsOp, AtenReciprocalOp,
       AtenBitwiseAndTensorOp, AtenGtScalarOp, AtenGeScalarOp, AtenEqScalarOp,
       AtenLtScalarOp, AtenLeScalarOp, AtenWhereSelfOp, AtenGtTensorOp,
       AtenEqTensorOp, AtenLtTensorOp, AtenThresholdOp, AtenThresholdBackwardOp,

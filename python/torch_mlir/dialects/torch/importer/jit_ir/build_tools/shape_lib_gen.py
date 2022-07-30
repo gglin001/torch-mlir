@@ -300,6 +300,9 @@ def aten〇sigmoid(self: List[int]) -> List[int]:
 def aten〇hardsigmoid(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
+def aten〇softplus(self: List[int], beta: float = 1, threshold: float = 20) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
 def aten〇square(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
@@ -310,6 +313,9 @@ def aten〇silu(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇exp(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇expm1(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇sin(self: List[int]) -> List[int]:
@@ -334,6 +340,9 @@ def aten〇detach(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇log2(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇log1p(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇rsqrt(self: List[int]) -> List[int]:
@@ -481,10 +490,20 @@ def aten〇var(self: List[int], unbiased: bool = True) -> List[int]:
     return []
 
 def aten〇var〇dim(self: List[int], dim: List[int], unbiased: bool = True, keepdim: bool = False) -> List[int]:
+    if len(dim)==0:
+        dim = list(range(len(self)))
+    return upstream_shape_functions.mean_dim(self, dim, keepdim, None)
+
+def aten〇var〇correction(self: List[int], dim: Optional[List[int]], correction: Optional[int], keepdim: bool = False) -> List[int]:
+    if dim is None or len(dim)==0:
+        dim = list(range(len(self)))
     return upstream_shape_functions.mean_dim(self, dim, keepdim, None)
 
 def aten〇std(self: List[int], unbiased: bool = True) -> List[int]:
     return []
+
+def aten〇std〇dim(self: List[int], dim: List[int], unbiased: bool = True, keepdim: bool = False) -> List[int]:
+    return upstream_shape_functions.mean_dim(self, dim, keepdim, None)
 
 def _reduce_along_dim(self: List[int], dim: int, keepdim: bool):
     dim = upstream_shape_functions.maybe_wrap_dim(dim, len(self))
@@ -519,13 +538,14 @@ def aten〇max〇dim(self: List[int], dim: int, keepdim: bool = False) -> Tuple[
     return reduced_shape, reduced_shape
 
 def aten〇mean〇dim(self: List[int], dim: List[int], keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
+    if len(dim)==0:
+        dim = list(range(len(self)))
     return upstream_shape_functions.mean_dim(self, dim, keepdim, dtype)
 
 def aten〇sum〇dim_IntList(self: List[int], dim: Optional[List[int]], keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
-    if dim is None:
-        return upstream_shape_functions.mean_dim(self, [], keepdim, dtype)
-    else:
-        return upstream_shape_functions.mean_dim(self, dim, keepdim, dtype)
+    if dim is None or len(dim)==0:
+        dim = list(range(len(self)))
+    return upstream_shape_functions.mean_dim(self, dim, keepdim, dtype)
 
 def aten〇permute(self: List[int], dims: List[int]) -> List[int]:
     return upstream_shape_functions.permute(self, dims)
@@ -1007,6 +1027,7 @@ def aten〇pad(self: List[int], pad: List[int], mode: str = "constant", value: O
     Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), None]), # Explicit None value.
     Invocation(TensorOfShape(2, 3, 4, 5), [None, LongTensorOfShape(4), LongTensorOfShape(4)]), # Indexing tensors on consecutive dimensions.
     Invocation(TensorOfShape(2, 3, 4, 5), [None, LongTensorOfShape(4), None, LongTensorOfShape(4)]), # Indexing tensors on non-consecutive dimensions.
+    Invocation(TensorOfShape(2, 3, 4, 5), [LongTensorOfShape(4, 2), None, LongTensorOfShape(2)]), # Indexing tensors on non-consecutive dimensions.
     Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4, 5, 6), LongTensorOfShape(1, 5, 1)]), # Broadcasting of index tensors.
     Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4)]), # Fewer index tensors than dimensions.
     ErrorInvocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(4), LongTensorOfShape(4)]), # More index tensors than dimensions.
@@ -1028,15 +1049,13 @@ def aten〇index〇Tensor(self: List[int], indices: List[Optional[List[int]]]) -
     if len(unused_dim_sizes) == 0:
         return broadcasted_shape
 
-    prev_index_tensor_location = -1
     first_index_tensor_location = -1
     index_tensors_are_together = True
     for e, index_tensor_shape in enumerate(indices):
         if index_tensor_shape is not None:
             if first_index_tensor_location == -1:
                 first_index_tensor_location = e
-                prev_index_tensor_location = e
-            elif e - prev_index_tensor_location != 1:
+            elif e - first_index_tensor_location != 1:
                 index_tensors_are_together = False
 
     if not index_tensors_are_together:

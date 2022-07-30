@@ -51,6 +51,11 @@ public:
 
     torch_to_mhlo::populateBasicOpPatternsAndLegality(typeConverter, patterns,
                                                       target);
+    torch_to_mhlo::populateViewLikeOpPatternsAndLegality(typeConverter, patterns,
+                                                      target);
+    torch_to_mhlo::populateGatherOpPatternsAndLegality(typeConverter, patterns,
+                                                       target);
+
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
       return signalPassFailure();

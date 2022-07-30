@@ -19,7 +19,12 @@ namespace torch_to_mhlo {
 void populateBasicOpPatternsAndLegality(TypeConverter &typeConverter,
                                         RewritePatternSet &patterns,
                                         ConversionTarget &target);
-
+void populateViewLikeOpPatternsAndLegality(TypeConverter &typeConverter,
+                                           RewritePatternSet &patterns,
+                                           ConversionTarget &target);
+void populateGatherOpPatternsAndLegality(TypeConverter &typeConverter,
+                                         RewritePatternSet &patterns,
+                                         ConversionTarget &target);
 } // namespace torch_to_mhlo
 } // namespace torch
 } // namespace mlir
