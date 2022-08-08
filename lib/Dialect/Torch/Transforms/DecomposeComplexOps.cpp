@@ -229,7 +229,34 @@ public:
 } // namespace
 
 namespace {
-class DecomposeAtenZeroOp : public OpRewritePattern<AtenZeroOp> {
+class DecomposeAtenNarrowOp : public OpRewritePattern<AtenNarrowOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenNarrowOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Location loc = op.getLoc();
+    Value start = op.start();
+    Value dim = op.dim();
+    Value length = op.length();
+
+    Value one =
+        rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(1));
+    Value startPlusLength =
+        rewriter.create<AtenAddIntOp>(loc, one.getType(), start, length);
+    
+    rewriter.replaceOpWithNewOp<AtenSliceTensorOp>(
+        op, op.getResult().getType(), op.self(), /*dim=*/dim, /*start=*/start,
+        /*end=*/startPlusLength, /*step=*/one);
+
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+class DecomposeAtenZeroOp
+    : public OpRewritePattern<AtenZeroOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(AtenZeroOp op,
@@ -1026,10 +1053,11 @@ public:
           op, "only floating-point type is supported");
     }
 
-    auto dimListConstruct = dimList.getDefiningOp<PrimListConstructOp>();
-    if (!dimListConstruct) {
+    SmallVector<Value> dimListElements;
+    if (!getListConstructElements(dimList, dimListElements) &&
+        !dimList.getType().isa<Torch::NoneType>()) {
       return rewriter.notifyMatchFailure(
-          op, "expect dimList to be constructed from list construct");
+          op, "expected `dim` to be `None` or constructed from list construct");
     }
 
     // Compute sum along dimensions specified in `dimList`.
@@ -1039,12 +1067,12 @@ public:
     // `productDimSize` is product of sizes of dimensions to be reduced.
     Value productDimSize;
     // Case: Reduce along all dims.
-    if (dimListConstruct.elements().empty() && inputRank != 0) {
+    if (dimListElements.empty() && inputRank != 0) {
       productDimSize = rewriter.create<AtenNumelOp>(loc, input);
     } else {
       productDimSize = rewriter.create<Torch::ConstantIntOp>(
           loc, rewriter.getI64IntegerAttr(1));
-      for (Value dim : dimListConstruct.elements()) {
+      for (Value dim : dimListElements) {
         Value dimSize = rewriter.create<AtenSizeIntOp>(loc, input, dim);
         productDimSize =
             rewriter.create<AtenMulIntOp>(loc, productDimSize, dimSize);
@@ -2139,8 +2167,11 @@ class DecomposeAtenFloorDivideOp : public OpRewritePattern<AtenFloorDivideOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(AtenFloorDivideOp op,
                                 PatternRewriter &rewriter) const override {
+    // https://pytorch.org/docs/stable/generated/torch.floor_divide.html
+    // PyTorch aten.floor_divide is a misnomer because it actually rounds
+    // the quotient towards zero instead of taking its floor.
     Value cstStrFloor =
-        rewriter.create<Torch::ConstantStrOp>(op.getLoc(), "floor");
+        rewriter.create<Torch::ConstantStrOp>(op.getLoc(), "trunc");
     rewriter.replaceOpWithNewOp<AtenDivTensorModeOp>(
         op, op.getType(), op.self(), op.other(),
         /*rounding_mode=*/cstStrFloor);
@@ -2539,6 +2570,8 @@ class DecomposeComplexOpsPass
     target.addIllegalOp<AtenVarCorrectionOp>();
     patterns.add<DecomposeAtenStdDimOp>(context);
     target.addIllegalOp<AtenStdDimOp>();
+    patterns.add<DecomposeAtenNarrowOp>(context);
+    target.addIllegalOp<AtenNarrowOp>();
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {

@@ -489,8 +489,8 @@ def aten〇mean(self: List[int], dtype: Optional[int] = None) -> List[int]:
 def aten〇var(self: List[int], unbiased: bool = True) -> List[int]:
     return []
 
-def aten〇var〇dim(self: List[int], dim: List[int], unbiased: bool = True, keepdim: bool = False) -> List[int]:
-    if len(dim)==0:
+def aten〇var〇dim(self: List[int], dim: Optional[List[int]], unbiased: bool = True, keepdim: bool = False) -> List[int]:
+    if dim is None or len(dim)==0:
         dim = list(range(len(self)))
     return upstream_shape_functions.mean_dim(self, dim, keepdim, None)
 
@@ -502,7 +502,9 @@ def aten〇var〇correction(self: List[int], dim: Optional[List[int]], correctio
 def aten〇std(self: List[int], unbiased: bool = True) -> List[int]:
     return []
 
-def aten〇std〇dim(self: List[int], dim: List[int], unbiased: bool = True, keepdim: bool = False) -> List[int]:
+def aten〇std〇dim(self: List[int], dim: Optional[List[int]], unbiased: bool = True, keepdim: bool = False) -> List[int]:
+    if dim is None or len(dim)==0:
+        dim = list(range(len(self)))
     return upstream_shape_functions.mean_dim(self, dim, keepdim, None)
 
 def _reduce_along_dim(self: List[int], dim: int, keepdim: bool):
@@ -537,8 +539,8 @@ def aten〇max〇dim(self: List[int], dim: int, keepdim: bool = False) -> Tuple[
     reduced_shape = _reduce_along_dim(self, dim, keepdim)
     return reduced_shape, reduced_shape
 
-def aten〇mean〇dim(self: List[int], dim: List[int], keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
-    if len(dim)==0:
+def aten〇mean〇dim(self: List[int], dim: Optional[List[int]], keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
+    if dim is None or len(dim)==0:
         dim = list(range(len(self)))
     return upstream_shape_functions.mean_dim(self, dim, keepdim, dtype)
 
@@ -807,6 +809,9 @@ def aten〇div〇Tensor_mode(self: List[int], other: List[int], rounding_mode: O
 def aten〇floor_divide(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
 
+def aten〇atan2(self: List[int], other: List[int]) -> List[int]:
+    return upstream_shape_functions.broadcast(self, other)
+
 def aten〇__and__〇Tensor(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
 
@@ -924,6 +929,9 @@ def aten〇batch_norm(input: List[int], weight: Optional[List[int]], bias: Optio
 def aten〇slice〇Tensor(self: List[int], dim: int = 0, start: Optional[int] = None, end: Optional[int] = None, step: int = 1) -> List[int]:
     return upstream_shape_functions.slice(self, dim, start, end, step)
 
+def aten〇narrow(self: List[int], dim: int, start: int, length: int) -> List[int]:
+    return upstream_shape_functions.slice(self, dim, start, start + length, 1)
+
 def aten〇slice_scatter(self: List[int], src: List[int], dim: int = 0, start: Optional[int] = None, end: Optional[int] = None, step: int = 1) -> List[int]:
     return self
 
@@ -944,6 +952,34 @@ def aten〇index_put〇hacked_twin(self: List[int], indices: List[List[int]], va
 
 def aten〇embedding(weight: List[int], indices: List[int], padding_idx: int = -1, scale_grad_by_freq: bool = False, sparse: bool = False) -> List[int]:
     return upstream_shape_functions.embedding(weight, indices, padding_idx, scale_grad_by_freq, sparse)
+
+def aten〇embedding_bag〇padding_idx(weight: List[int], indices: List[int], offsets: List[int], scale_grad_by_freq: bool, mode: int, sparse: bool, per_sample_weights: Optional[List[int]], include_last_offset: bool, padding_idx: Optional[int]) -> Tuple[List[int], List[int], List[int], List[int]]:
+    assert len(weight) == 2
+    assert len(indices) == 1
+    assert len(offsets) == 1
+    output_bag_shape: List[int] = []
+    out_dim0 = offsets[0]
+    if (include_last_offset):
+        out_dim0 = out_dim0 - 1
+    out_dim1 = weight[1]
+    output_bag_shape.append(out_dim0)
+    output_bag_shape.append(out_dim1)
+
+    offset2bag_shape: List[int] = []
+    if mode == 1:
+        offset2bag_shape.append(0)
+    else:
+        offset2bag_shape = upstream_shape_functions._copy(indices)
+
+    bag_size_shape = upstream_shape_functions._copy(offsets)
+
+    max_indices_shape: List[int] = []
+    if mode == 2:
+        max_indices_shape = upstream_shape_functions._copy(output_bag_shape)
+    else:
+        max_indices_shape = upstream_shape_functions._copy(offsets)
+
+    return output_bag_shape, offset2bag_shape, bag_size_shape, max_indices_shape
 
 @check_shape_function([
     Invocation(TensorOfShape(2, 3), LongTensorOfShape(2), None, 1, -100), # Basic case.

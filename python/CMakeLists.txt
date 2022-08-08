@@ -21,8 +21,8 @@ option(TORCH_MLIR_USE_INSTALLED_PYTORCH "Build from local PyTorch in environment
 
 if (NOT TORCH_MLIR_USE_INSTALLED_PYTORCH)
   # Source builds
-  set(ENV{PYTORCH_REPO} ${PYTORCH_REPO})
-  set(ENV{PYTORCH_BRANCH} ${PYTORCH_BRANCH})
+  set(ENV{TORCH_MLIR_SRC_PYTORCH_REPO} ${TORCH_MLIR_SRC_PYTORCH_REPO})
+  set(ENV{TORCH_MLIR_SRC_PYTORCH_BRANCH} ${TORCH_MLIR_SRC_PYTORCH_BRANCH})
   set(ENV{MACOSX_DEPLOYMENT_TARGET} ${MACOSX_DEPLOYMENT_TARGET})
   set(ENV{CMAKE_OSX_ARCHITECTURES} ${CMAKE_OSX_ARCHITECTURES})
   set(ENV{CMAKE_C_COMPILER_LAUNCHER} ${CMAKE_C_COMPILER_LAUNCHER})
@@ -87,7 +87,8 @@ declare_mlir_python_extension(TorchMLIRPythonExtensions.Main
 if(TORCH_MLIR_ENABLE_LTC)
   add_subdirectory(torch_mlir/csrc/base_lazy_backend)
 endif()
-# Reference backend has a separate check for TORCH_MLIR_ENABLE_LTC.
+# Reference backend has a separate check for TORCH_MLIR_ENABLE_LTC, since it
+# generates a dummy Python library when disabled.
 add_subdirectory(torch_mlir/csrc/reference_lazy_backend)
 
 ################################################################################
