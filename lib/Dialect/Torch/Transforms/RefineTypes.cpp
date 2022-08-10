@@ -310,15 +310,15 @@ struct ValueKnowledge {
                                        const ValueKnowledge &rhs) {
     Optional<ValueKnowledge> knowledge = meetTypes(lhs, rhs);
 
-    if (!knowledge.hasValue())
+    if (!knowledge.has_value())
       return None;
-    ValueKnowledge result = knowledge.getValue();
+    ValueKnowledge result = knowledge.value();
 
     Optional<OptionalKnowledge> optional =
         meetOptionalKnowledge(lhs.optional, rhs.optional);
-    if (!optional.hasValue())
+    if (!optional.has_value())
       return None;
-    result.optional = optional.getValue();
+    result.optional = optional.value();
     return result;
   }
 
@@ -446,6 +446,7 @@ private:
                            ArrayRef<const ValueState *> operands);
   void visitAtenScalarImplicitOp(AtenScalarImplicitOp op,
                                  ArrayRef<const ValueState *> operands);
+  void visitAtenEmbeddingBagOp(Operation *op);
 };
 } // namespace
 
@@ -517,13 +518,13 @@ updateResultTypeState(const ValueKnowledge *tensor,
                       Optional<bool> rankIsNonZero,
                       const torch_upstream::ResultTypeState &inState,
                       bool skipRankCheck = false) {
-  if (!rankIsNonZero.hasValue() && !skipRankCheck)
+  if (!rankIsNonZero.has_value() && !skipRankCheck)
     return torch_upstream::ResultTypeState{};
   assert(tensor->dtype && "tensor.dtype must be not none");
 
   torch_upstream::ResultTypeState new_state = inState;
   torch_upstream::ScalarType current = getScalarTypeForType(tensor->dtype);
-  if (skipRankCheck || rankIsNonZero.getValue())
+  if (skipRankCheck || rankIsNonZero.value())
     new_state.dimResult = promote_skip_undefined(inState.dimResult, current);
   else
     new_state.zeroResult = promote_skip_undefined(inState.zeroResult, current);
@@ -1052,26 +1053,9 @@ void TypeAnalysis::visitOperation(Operation *op,
     incorporateKnowledge(embedding.getResult(), knowledge);
     return;
   }
-
-  // case for Embedding bag padding idx.
-  if (auto embedding_bag_padding_idx =
-          dyn_cast<AtenEmbeddingBagPaddingIdxOp>(op)) {
-
-    auto resultFloatKnowledge =
-        ValueKnowledge::getTensorPessimisticValueState(op->getContext());
-    resultFloatKnowledge.dtype = Float32Type::get(op->getContext());
-
-    incorporateKnowledge(embedding_bag_padding_idx.getResult(0),
-                         resultFloatKnowledge);
-    auto resultIntKnowledge =
-        ValueKnowledge::getTensorPessimisticValueState(op->getContext());
-    resultIntKnowledge.dtype =
-        IntegerType::get(op->getContext(), 64, IntegerType::Signed);
-
-    for (int64_t i = 1; i < 4; i++) {
-      incorporateKnowledge(embedding_bag_padding_idx.getResult(i),
-                           resultIntKnowledge);
-    }
+  
+  if (isa<Aten_EmbeddingBagOp, AtenEmbeddingBagPaddingIdxOp>(op)) {
+    visitAtenEmbeddingBagOp(op);
     return;
   }
 
@@ -1124,8 +1108,8 @@ void TypeAnalysis::incorporateKnowledge(Value v,
                                         const ValueKnowledge &knowledge) {
   auto updatedKnowledge = ValueKnowledge::meet(
       knowledge, ValueKnowledge::getPessimisticValueState(v));
-  assert(updatedKnowledge.hasValue() && "IR has contradictory type!");
-  getLatticeElement(v)->join(updatedKnowledge.getValue());
+  assert(updatedKnowledge.has_value() && "IR has contradictory type!");
+  getLatticeElement(v)->join(updatedKnowledge.value());
 }
 
 void TypeAnalysis::visitAtenLinearOp(AtenLinearOp op,
@@ -1151,6 +1135,23 @@ void TypeAnalysis::visitAtenLinearOp(AtenLinearOp op,
   incorporateKnowledge(op->getResult(0), knowledge);
 }
 
+void TypeAnalysis::visitAtenEmbeddingBagOp(Operation *op) {
+  auto resultFloatKnowledge =
+      ValueKnowledge::getTensorPessimisticValueState(op->getContext());
+  resultFloatKnowledge.dtype = Float32Type::get(op->getContext());
+
+  incorporateKnowledge(op->getResult(0), resultFloatKnowledge);
+  auto resultIntKnowledge =
+      ValueKnowledge::getTensorPessimisticValueState(op->getContext());
+  resultIntKnowledge.dtype =
+      IntegerType::get(op->getContext(), 64, IntegerType::Signed);
+
+  for (int64_t i = 1; i < 4; i++) {
+    incorporateKnowledge(op->getResult(i), resultIntKnowledge);
+  }
+  return;
+}
+
 // Arange like ops returns a 1-D tensor of size ceil(end - start).
 void TypeAnalysis::visitAtenArangeLikeOpHelper(Operation *op,
                                                llvm::Optional<Value> start,
@@ -1169,9 +1170,9 @@ void TypeAnalysis::visitAtenArangeLikeOpHelper(Operation *op,
     // `dtype` is inferred to be the default dtype, see
     // `torch.get_default_dtype`. Otherwise, the `dtype` is inferred to
     // be `torch.int64`
-    if ((start.hasValue() && (*start).getType().isa<Torch::FloatType>()) ||
+    if ((start.has_value() && (*start).getType().isa<Torch::FloatType>()) ||
         end.getType().isa<Torch::FloatType>() ||
-        (step.hasValue() && (*step).getType().isa<Torch::FloatType>())) {
+        (step.has_value() && (*step).getType().isa<Torch::FloatType>())) {
       // TODO: Should get the dtype from torch.get_default_dtype().
       // For now, use float32 which is the initial default dtype.
       knowledge.dtype = Float32Type::get(op->getContext());
@@ -1263,7 +1264,7 @@ void TypeAnalysis::visitConstantTensorAllocOp(OpTy op,
       ValueKnowledge::getTensorPessimisticValueState(op->getContext());
   if (!dataType)
     dataType = Torch::FloatType::get(op->getContext());
-  fillInDTypeGivenDTypeAndDataType(knowledge, op.dtype(), dataType.getValue());
+  fillInDTypeGivenDTypeAndDataType(knowledge, op.dtype(), dataType.value());
   incorporateKnowledge(op.getResult(), knowledge);
 }
 
@@ -1333,11 +1334,11 @@ void TypeAnalysis::visitAtenCatOp(AtenCatOp op,
       }));
   for (auto tensor : tensors) {
     auto newDtype = meetElementTypes(knowledge.dtype, tensor.dtype);
-    if (!newDtype.hasValue()) {
+    if (!newDtype.has_value()) {
       incorporateKnowledge(op.getResult(), knowledge);
       return;
     }
-    knowledge.dtype = newDtype.getValue();
+    knowledge.dtype = newDtype.value();
   }
   incorporateKnowledge(op.getResult(), knowledge);
 }

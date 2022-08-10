@@ -119,7 +119,7 @@ public:
 
     SmallVector<int32_t> values(size, fillVal);
     auto constOp =
-        mhlo::getConstTensor<int32_t>(rewriter, op, values, shape).getValue();
+        mhlo::getConstTensor<int32_t>(rewriter, op, values, shape).value();
 
     rewriter.replaceOpWithNewOp<mhlo::ConvertOp>(op, outType, constOp);
     return success();
@@ -884,7 +884,7 @@ LogicalResult ConvertAtenOp<AtenNativeLayerNormOp>::matchAndRewrite(
       op->getLoc(), mhloBatchNormOutTy, input,
       mhlo::getConstTensor(rewriter, op, llvm::makeArrayRef(inputFlattenShape),
                            {static_cast<int64_t>(inputFlattenShape.size())})
-          .getValue());
+          .value());
 
   // Generate "scale" and "offset" Value for mhlo.BatchNormTrainingOp.
   SmallVector<APFloat> zeroConstVec(
@@ -920,19 +920,19 @@ LogicalResult ConvertAtenOp<AtenNativeLayerNormOp>::matchAndRewrite(
       op->getLoc(), outputTy, batchNormTrainingResult.getResult(0),
       mhlo::getConstTensor(rewriter, op, outputTy.getShape(),
                            {static_cast<int64_t>(outputTy.getShape().size())})
-          .getValue());
+          .value());
   auto mean = rewriter.create<mhlo::DynamicReshapeOp>(
       op->getLoc(), outputMeanOrVarTy, batchNormTrainingResult.getResult(1),
       mhlo::getConstTensor(
           rewriter, op, outputMeanOrVarTy.getShape(),
           {static_cast<int64_t>(outputMeanOrVarTy.getShape().size())})
-          .getValue());
+          .value());
   auto var = rewriter.create<mhlo::DynamicReshapeOp>(
       op->getLoc(), outputMeanOrVarTy, batchNormTrainingResult.getResult(2),
       mhlo::getConstTensor(
           rewriter, op, outputMeanOrVarTy.getShape(),
           {static_cast<int64_t>(outputMeanOrVarTy.getShape().size())})
-          .getValue());
+          .value());
 
   // Apply affine transform: output x weight + bias [element-wise]
   auto bcastedWeight = mhlo::promoteAndBroadcast(rewriter, weight, outputTy);
@@ -945,6 +945,39 @@ LogicalResult ConvertAtenOp<AtenNativeLayerNormOp>::matchAndRewrite(
   return success();
 }
 
+} // namespace
+
+// AtenCatOp
+namespace {
+template <>
+LogicalResult ConvertAtenOp<AtenCatOp>::matchAndRewrite(
+    AtenCatOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  auto outType =
+      getTypeConverter()->convertType(op.getType()).cast<RankedTensorType>();
+  int64_t dim;
+  if (!matchPattern(op.dim(), m_TorchConstantInt(&dim))) {
+    return rewriter.notifyMatchFailure(op,
+                                       "only constant dim param is supported");
+  }
+
+  SmallVector<Value> torchTensors;
+  if (!getListConstructElements(op.tensors(), torchTensors)) {
+    return rewriter.notifyMatchFailure(
+        op, "input should comes from a PrimListConstructOp");
+  }
+  SmallVector<Value> builtinTensors = getTypeConvertedValues(
+      rewriter, op->getLoc(), getTypeConverter(), torchTensors);
+
+  // Promote type
+  for (auto &v : builtinTensors) {
+    v = mhlo::promoteType(rewriter, v, outType);
+  }
+
+  rewriter.replaceOpWithNewOp<mhlo::ConcatenateOp>(
+      op, ValueRange(builtinTensors), static_cast<uint64_t>(dim));
+  return success();
+}
 } // namespace
 
 void mlir::torch::torch_to_mhlo::populateBasicOpPatternsAndLegality(
@@ -1025,6 +1058,8 @@ void mlir::torch::torch_to_mhlo::populateBasicOpPatternsAndLegality(
   INSERT_ATENOP_PATTERN(AtenReluOp);
   INSERT_ATENOP_PATTERN(AtenGeluOp);
   INSERT_ATENOP_PATTERN(AtenErfOp);
+
+  INSERT_ATENOP_PATTERN(AtenCatOp);
 
   INSERT_ATENOP_PATTERN(AtenBatchNormOp);
   INSERT_ATENOP_PATTERN(AtenNativeLayerNormOp);
