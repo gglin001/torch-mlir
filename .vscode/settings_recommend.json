@@ -27,5 +27,5 @@
         "${workspaceFolder}/python",
         // "./build/install/python_packages/torch_mlir"
     ],
-    "clangd.path": "/opt/conda/envs/py38/bin/clangd"
+    "clangd.path": "/opt/conda/envs/py38/bin/clangd",
 }

@@ -2,6 +2,7 @@
 --pre
 torch
 
+pyyaml
 numpy
 torchvision
 
