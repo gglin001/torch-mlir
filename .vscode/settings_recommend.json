@@ -1,0 +1,18 @@
+{
+    // used in
+    // https://github.com/gglin001/Dockerfiles/blob/master/mlir/Dockerfile
+    "cmake.configureSettings": {
+        // "CMAKE_PREFIX_PATH": "/opt/conda/envs/py38",
+        // "CMAKE_SYSROOT": "/opt/conda/envs/py38/x86_64-conda-linux-gnu/sysroot",
+        "CMAKE_INSTALL_PREFIX": "install",
+        "MLIR_ENABLE_BINDINGS_PYTHON": "OFF",
+        "TORCH_MLIR_ENABLE_MHLO": "OFF",
+        "Python3_EXECUTABLE": "/opt/conda/envs/py38/bin/python",
+        "MLIR_DIR": "/usr/lib/llvm-16/lib/cmake/mlir",
+        "LLVM_EXTERNAL_LIT": "/opt/conda/envs/py38/bin/lit",
+    },
+    "terminal.integrated.env.linux": {
+        //
+    },
+    "clangd.path": "/usr/bin/clangd-16",
+}

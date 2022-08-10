@@ -42,7 +42,7 @@ if(TORCH_MLIR_ENABLE_MHLO)
   # The i64 calculation is much slower than i32 on some devices, such as Nvidia GPU.
   # One can truncate from i64 to i32 since dimension sizes are unlikely to exceed
   # the range of i32(4GiB)
-  option(TORCH_MLIR_ENABLE_MHLO_TRUNC_DIMSIZE_TO_I32 
+  option(TORCH_MLIR_ENABLE_MHLO_TRUNC_DIMSIZE_TO_I32
 	 "Enable truncate dimension size from i64 to i32(unsafely)" OFF)
   if(TORCH_MLIR_ENABLE_MHLO_TRUNC_DIMSIZE_TO_I32)
     add_definitions(-DTORCH_MLIR_ENABLE_MHLO_TRUNC_DIMSIZE_TO_I32)
@@ -91,7 +91,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
   # Don't try to compile the python extensions at the moment. We need
   # to import lots of dependencies from AddMLIRPython to make this work.
-  set(MLIR_ENABLE_BINDINGS_PYTHON 1)
+  # set(MLIR_ENABLE_BINDINGS_PYTHON 1)
   option(TORCH_MLIR_ENABLE_JIT_IR_IMPORTER "Enables JIT IR Importer" ON)
 
   set(TORCH-MLIR_BUILT_STANDALONE 1)
