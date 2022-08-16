@@ -658,7 +658,8 @@ void TypeAnalysis::visitOperation(Operation *op,
           AtenZero_Op, AtenIndexTensorOp, ValsemVariantAtenIndexPutImplOp,
           AtenIndexPutOp, ValsemVariantAtenCopyOp, AtenZeroOp,
           AtenIndexPutHackedTwinOp, AtenMaskedFillScalarOp, AtenFlipOp,
-          PrimAbsScalarOp, AtenNumpyTOp, AtenTriuOp>(op)) {
+          PrimAbsScalarOp, AtenNumpyTOp, AtenTriuOp, AtenMaskedFillTensorOp>(
+          op)) {
     return incorporateKnowledge(op->getResult(0), operands[0]->getValue());
   }
 
@@ -770,7 +771,7 @@ void TypeAnalysis::visitOperation(Operation *op,
   // Promote LHS with scalar RHS.
   if (isa<AtenAddScalarOp, AtenSubScalarOp, AtenMulScalarOp, AtenDivScalarOp,
           AtenFmodScalarOp, AtenFloorDivideScalarOp, AtenPowTensorScalarOp,
-          AtenRsubScalarOp, AtenLeakyReluOp>(op)) {
+          AtenRsubScalarOp, AtenLeakyReluOp, AtenRemainderScalarOp>(op)) {
     auto lhs = operands[0]->getValue();
     Value scalar = op->getOperand(1);
     auto knowledge =
@@ -1021,6 +1022,11 @@ void TypeAnalysis::visitOperation(Operation *op,
 
   if (auto toDtypeLayout = dyn_cast<AtenToDtypeLayoutOp>(op)) {
     visitAtenToDtypeLikeOp<AtenToDtypeLayoutOp>(toDtypeLayout, operands);
+    return;
+  }
+
+  if (auto toDtype = dyn_cast<AtenToDeviceOp>(op)) {
+    visitAtenToDtypeLikeOp<AtenToDeviceOp>(toDtype, operands);
     return;
   }
 

@@ -427,6 +427,9 @@ def aten〇to〇dtype(self: List[int], dtype: int, non_blocking: bool = False, c
 def aten〇to〇dtype_layout(self: List[int], dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None, non_blocking: bool = False, copy: bool = False, memory_format: Optional[int] = None) -> List[int]:
     return self
 
+def aten〇to〇device(self: List[int], device: device, dtype: int, non_blocking: bool = False, copy: bool = False, memory_format: Optional[int] = None) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
 def aten〇to〇other(self: List[int], other: List[int], non_blocking: bool = False, copy: bool = False, memory_format: Optional[int] = None) -> List[int]:
     return upstream_shape_functions.unary(self)
 
@@ -476,6 +479,9 @@ def aten〇mul〇Scalar(self: List[int], other: float) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇div〇Scalar(self: List[int], other: float) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇remainder〇Scalar(self: List[int], other: float) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇floor_divide〇Scalar(self: List[int], other: float) -> List[int]:
@@ -769,6 +775,9 @@ def aten〇_to_copy(self: List[int], dtype: Optional[int] = None, layout: Option
     return upstream_shape_functions.unary(self)
 
 def aten〇masked_fill〇Scalar(self: List[int], mask: List[int], value: float) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇masked_fill〇Tensor(self: List[int], mask: List[int], value: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇zero(self: List[int]) -> List[int]:

@@ -49,7 +49,14 @@ if(TORCH_MLIR_ENABLE_MHLO)
   endif()
 endif()
 
-option(TORCH_MLIR_ENABLE_LTC "Enables LTC backend" ON)
+# TODO: Reenable LTC once OOT build is successful (https://github.com/llvm/torch-mlir/issues/1154)
+option(TORCH_MLIR_ENABLE_LTC "Enables LTC backend" OFF)
+
+if(TORCH_MLIR_ENABLE_LTC)
+    set(ENV{TORCH_MLIR_ENABLE_LTC} 1)
+else()
+    set(ENV{TORCH_MLIR_ENABLE_LTC} 0)
+endif()
 
 torch_mlir_add_llvm_external_project(
   torch-mlir-dialects

@@ -20,6 +20,10 @@
 # prevent this script from attempting to build the directory, and will simply
 # use the (presumed already built) directory as-is.
 #
+# By default the lazy tensor backend is disabled and not built to avoid conflicts
+# with the out-of-tree build. To enable it, set the TORCH_MLIR_ENABLE_LTC
+# environment variable to 1.
+#
 # The package version can be set with the TORCH_MLIR_PYTHON_PACKAGE_VERSION
 # environment variable. For example, this can be "20220330.357" for a snapshot
 # release on 2022-03-30 with build number 357.
@@ -64,7 +68,6 @@ class CMakeBuild(build_py):
         python_package_dir = os.path.join(cmake_build_dir,
                                           "tools", "torch-mlir", "python_packages",
                                           "torch_mlir")
-
         if not os.getenv("TORCH_MLIR_CMAKE_BUILD_DIR_ALREADY_BUILT"):
             src_dir = os.path.abspath(os.path.dirname(__file__))
             llvm_dir = os.path.join(
@@ -75,9 +78,6 @@ class CMakeBuild(build_py):
                 f"-DLLVM_TARGETS_TO_BUILD=host",
                 f"-DMLIR_ENABLE_BINDINGS_PYTHON=ON",
                 f"-DLLVM_ENABLE_PROJECTS=mlir",
-                f"-DTORCH_MLIR_ENABLE_MHLO=ON",
-                # TODO: Reenable LTC once JIT importer linkage issue is fixed (https://github.com/llvm/torch-mlir/issues/1154)
-                f"-DTORCH_MLIR_ENABLE_LTC=OFF",
                 f"-DLLVM_EXTERNAL_PROJECTS=torch-mlir;torch-mlir-dialects",
                 f"-DLLVM_EXTERNAL_TORCH_MLIR_SOURCE_DIR={src_dir}",
                 f"-DLLVM_EXTERNAL_TORCH_MLIR_DIALECTS_SOURCE_DIR={src_dir}/externals/llvm-external-projects/torch-mlir-dialects",
@@ -86,6 +86,11 @@ class CMakeBuild(build_py):
                 f"-DCMAKE_C_VISIBILITY_PRESET=hidden",
                 f"-DCMAKE_CXX_VISIBILITY_PRESET=hidden",
             ]
+            # TODO: Enable LTC by default once JIT importer linkage issue is fixed (https://github.com/llvm/torch-mlir/issues/1154)
+            enable_ltc = bool(int(os.environ.get("TORCH_MLIR_ENABLE_LTC", 0)))
+            if not enable_ltc:
+                cmake_args.append("-DTORCH_MLIR_ENABLE_LTC=OFF")
+
             os.makedirs(cmake_build_dir, exist_ok=True)
             cmake_cache_file = os.path.join(cmake_build_dir, "CMakeCache.txt")
             if os.path.exists(cmake_cache_file):

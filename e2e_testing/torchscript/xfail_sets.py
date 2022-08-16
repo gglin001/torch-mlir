@@ -28,7 +28,6 @@ TOSA_PASS_SET = {
     "ElementwiseBinaryModule_basic",
     "ElementwiseSigmoidModule_basic",
     "ElementwiseExpModule_basic",
-    "ElementwiseReluModule_basic",
     "ElementwiseFloorModule_basic",
     "ElementwiseLogModule_basic",
     "ElementwiseBinaryStaticShapeModule_basic",
@@ -53,6 +52,7 @@ TOSA_PASS_SET = {
     "TModuleRank1_basic",
     "TModuleRank0_basic",
     "ElementwiseToDtypeIdentityModule_basic",
+    "AtenToDeviceModule_basic",
     "View1DFoldModule_basic",
     "UnsafeView1DFoldModule_basic",
     "SqueezeDimModule_static",
@@ -102,7 +102,6 @@ TOSA_PASS_SET = {
     "ElementwiseFlattenBroadcastModule_basic",
     "SquareModule_basic",
     "MaxPool2dStaticModule_basic",
-    "ResNet18StaticModule_basic",
     "NativeLayerNormModule4D_basic",
     "LayerNormNormalizeOverAllDimsModule_basic",
     "PermuteModule_basic",
@@ -178,7 +177,7 @@ TOSA_PASS_SET = {
     "TransposeIntNegDimsModule_basic",
     "ArgmaxModule_keepDim",
     "ArgmaxModule_with_dim",
-    "_LogSoftmaxModuleStable_basic",    
+    "_LogSoftmaxModuleStable_basic",
 }
 
 LTC_XFAIL_SET = {
@@ -337,4 +336,8 @@ LTC_XFAIL_SET = {
     "ViewCollapseDynamicWithAtenSizeIntModule_basic",
     "AtenEmbeddingBagSumExample_basic",
     "Aten_EmbeddingBagExample_basic",
+    "ElementwiseRemainderScalarModule_Int_Float_basic",
+    "ElementwiseRemainderScalarModule_Float_basic",
+    "ElementwiseRemainderScalarModule_Int_basic",
+    "ElementwiseRemainderScalarModule_Bool_basic",
 }

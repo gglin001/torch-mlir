@@ -1155,6 +1155,47 @@ public:
 };
 } // namespace
 
+namespace {
+class DecomposeAtenNativeDropoutOp : public OpRewritePattern<AtenNativeDropoutOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenNativeDropoutOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    Value input = op.input();
+    Value prob = op.p();
+    bool train = false;
+    if (!matchPattern(op.train(), m_TorchConstantBool(&train)))
+      return rewriter.notifyMatchFailure(op, "train must be a boolean constant");
+
+    BaseTensorType inputType = input.getType().cast<BaseTensorType>();
+    if (!train) {
+      // TODO(yancey.yx): supports inference mode
+      return op.emitError(
+          "native_dropout does not support argument train is false");
+    }
+    if (!inputType.hasDtype() || !inputType.getDtype().isa<mlir::FloatType>())
+      return rewriter.notifyMatchFailure(
+          op, "only support floating type input for training mode");
+    Value noneVal = rewriter.create<ConstantNoneOp>(loc);
+    Value floatOne =
+        rewriter.create<ConstantFloatOp>(loc, rewriter.getF64FloatAttr(1.0));
+    Value oneMinusP = rewriter.create<AtenSubFloatOp>(loc, floatOne, prob);
+    Value boolMask = rewriter.create<ValsemVariantAtenBernoulliFloatOp>(
+        loc, inputType, input, oneMinusP, /*generator=*/noneVal);
+    Value maskedInput =
+        rewriter.create<AtenMulTensorOp>(loc, inputType, boolMask, input);
+    Value output =
+        rewriter.create<AtenMulScalarOp>(loc, inputType, maskedInput, oneMinusP);
+    Value one =
+        rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(1));
+    boolMask = rewriter.create<AtenGeScalarOp>(
+        loc, op.getResult(1).getType(), boolMask, one);
+    rewriter.replaceOp(op, {output, boolMask});
+  return success();
+  }
+};
+} // namespace
 // Decompose aten.var into: aten.var.dim op.
 namespace {
 class DecomposeAtenVarOp : public OpRewritePattern<AtenVarOp> {
@@ -1997,6 +2038,25 @@ public:
 } // namespace
 
 namespace {
+// Decompose `aten.to.device` op into `aten.to.dtype` op.
+class DecomposeAtenToDeviceOp : public OpRewritePattern<AtenToDeviceOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenToDeviceOp op,
+                                PatternRewriter &rewriter) const override {
+
+    // Device information isn't relevant to torch-mlir, so we can drop that info
+    // here.
+    rewriter.replaceOpWithNewOp<AtenToDtypeOp>(op, op.getType(), op.self(),
+                                               op.dtype(), op.non_blocking(),
+                                               op.copy(), op.memory_format());
+
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 // Decompose `aten.adaptive_avg_pool2d` op into `aten.avg_pool2d` op.
 //
 // For AdaptiveAvgPool2d op, when the input size is an integer multiple of
@@ -2416,8 +2476,6 @@ public:
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(Aten_EmbeddingBagOp op,
                                 PatternRewriter &rewriter) const override {
-
-    Location loc = op.getLoc();
     Value weight = op.weight();
     Value indices = op.indices();
     Value offsets = op.offsets();
@@ -2577,6 +2635,8 @@ class DecomposeComplexOpsPass
     patterns.add<DecomposeAten_ToCopyOp>(context);
     target.addIllegalOp<Aten_ToCopyOp>();
     patterns.add<DecomposeAtenDropoutOp>(context);
+    patterns.add<DecomposeAtenNativeDropoutOp>(context);
+    target.addIllegalOp<AtenNativeDropoutOp>(); 
     target.addIllegalOp<AtenDropoutOp>();
     target.addIllegalOp<AtenNewEmptyOp>();
     patterns.add<DecomposeAtenNewEmptyOp>(context);
@@ -2586,6 +2646,8 @@ class DecomposeComplexOpsPass
     patterns.add<DecomposeAtenPadOp>(context);
     patterns.add<DecomposeAtenToDtypeLayoutOp>(context);
     target.addIllegalOp<AtenToDtypeLayoutOp>();
+    patterns.add<DecomposeAtenToDeviceOp>(context);
+    target.addIllegalOp<AtenToDeviceOp>();
     patterns.add<DecomposeAtenAdaptiveAvgPool2dOp>(context);
     target.addIllegalOp<AtenAdaptiveAvgPool2dOp>();
     patterns.add<DecomposeAtenClampMinOp>(context);
