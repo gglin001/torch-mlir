@@ -111,8 +111,7 @@ add_subdirectory(torch_mlir/eager_mode)
 # Required for running the update_torch_ods.sh and update_shape_lib.sh scripts.
 ################################################################################
 
-# TODO: renable once it build on macOS Intel / M1
-#add_subdirectory(torch_mlir/_torch_mlir_custom_op_example)
+# add_subdirectory(torch_mlir/_torch_mlir_custom_op_example)
 
 ################################################################################
 # Generate packages and shared library
@@ -155,12 +154,10 @@ add_mlir_python_modules(TorchMLIRPythonModules
 # Then it would "just work".
 if(TORCH_MLIR_ENABLE_JIT_IR_IMPORTER)
   add_dependencies(TorchMLIRPythonModules TorchMLIRJITIRImporter)
+  add_dependencies(TorchMLIRPythonModules TorchMLIRJITIRImporterPybind)
   # Build the E2E Tests (which depend on the JIT IR importer now).
   add_dependencies(TorchMLIRPythonModules TorchMLIRE2ETestPythonModules)
 endif()
-
-# TODO: Add after macOS builds are fixed
-#add_dependencies(TorchMLIRPythonModules torch_mlir_custom_op_example)
 
 if(TORCH_MLIR_ENABLE_LTC)
   # Add Torch-MLIR LTC backend as dependency

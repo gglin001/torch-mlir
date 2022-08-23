@@ -4369,70 +4369,92 @@ module {
     }
     return %6 : !torch.list<int>
   }
-  func.func @__torch__.torch.jit._shape_functions.mean_dim(%arg0: !torch.list<int>, %arg1: !torch.list<int>, %arg2: !torch.bool, %arg3: !torch.any) -> !torch.list<int> {
-    %none = torch.constant.none
+  func.func @__torch__.torch.jit._shape_functions.sum_mean_dim(%arg0: !torch.list<int>, %arg1: !torch.optional<list<int>>, %arg2: !torch.bool, %arg3: !torch.any) -> !torch.list<int> {
     %str = torch.constant.str "AssertionError: "
-    %int0 = torch.constant.int 0
     %false = torch.constant.bool false
     %true = torch.constant.bool true
+    %none = torch.constant.none
+    %int0 = torch.constant.int 0
     %int1 = torch.constant.int 1
     %0 = torch.prim.ListConstruct  : () -> !torch.list<int>
-    %1 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
-    torch.prim.Loop %1, %true, init() {
+    %1 = torch.aten.__is__ %arg1, %none : !torch.optional<list<int>>, !torch.none -> !torch.bool
+    %2 = torch.prim.If %1 -> (!torch.bool) {
+      torch.prim.If.yield %true : !torch.bool
+    } else {
+      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
+      %6 = torch.aten.len.t %5 : !torch.list<int> -> !torch.int
+      %7 = torch.aten.eq.int %6, %int0 : !torch.int, !torch.int -> !torch.bool
+      torch.prim.If.yield %7 : !torch.bool
+    }
+    %3 = torch.prim.If %2 -> (!torch.list<int>) {
+      %5 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
+      %6 = torch.prim.ListConstruct  : () -> !torch.list<int>
+      torch.prim.Loop %5, %true, init() {
+      ^bb0(%arg4: !torch.int):
+        %7 = torch.aten.append.t %6, %arg4 : !torch.list<int>, !torch.int -> !torch.list<int>
+        torch.prim.Loop.condition %true, iter()
+      } : (!torch.int, !torch.bool) -> ()
+      torch.prim.If.yield %6 : !torch.list<int>
+    } else {
+      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
+      torch.prim.If.yield %5 : !torch.list<int>
+    }
+    %4 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
+    torch.prim.Loop %4, %true, init() {
     ^bb0(%arg4: !torch.int):
-      %2 = torch.aten.len.t %arg1 : !torch.list<int> -> !torch.int
-      %3 = torch.prim.Loop %2, %true, init(%false) {
+      %5 = torch.aten.len.t %3 : !torch.list<int> -> !torch.int
+      %6 = torch.prim.Loop %5, %true, init(%false) {
       ^bb0(%arg5: !torch.int, %arg6: !torch.bool):
-        %4 = torch.aten.__getitem__.t %arg1, %arg5 : !torch.list<int>, !torch.int -> !torch.int
-        %5 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
-        %6 = torch.aten.le.int %5, %int0 : !torch.int, !torch.int -> !torch.bool
-        %7 = torch.prim.If %6 -> (!torch.int) {
+        %7 = torch.aten.__getitem__.t %3, %arg5 : !torch.list<int>, !torch.int -> !torch.int
+        %8 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
+        %9 = torch.aten.le.int %8, %int0 : !torch.int, !torch.int -> !torch.bool
+        %10 = torch.prim.If %9 -> (!torch.int) {
           torch.prim.If.yield %int1 : !torch.int
         } else {
-          torch.prim.If.yield %5 : !torch.int
+          torch.prim.If.yield %8 : !torch.int
         }
-        %8 = torch.aten.neg.int %7 : !torch.int -> !torch.int
-        %9 = torch.aten.sub.int %7, %int1 : !torch.int, !torch.int -> !torch.int
-        %10 = torch.aten.lt.int %4, %8 : !torch.int, !torch.int -> !torch.bool
-        %11 = torch.prim.If %10 -> (!torch.bool) {
+        %11 = torch.aten.neg.int %10 : !torch.int -> !torch.int
+        %12 = torch.aten.sub.int %10, %int1 : !torch.int, !torch.int -> !torch.int
+        %13 = torch.aten.lt.int %7, %11 : !torch.int, !torch.int -> !torch.bool
+        %14 = torch.prim.If %13 -> (!torch.bool) {
           torch.prim.If.yield %true : !torch.bool
         } else {
-          %17 = torch.aten.gt.int %4, %9 : !torch.int, !torch.int -> !torch.bool
-          torch.prim.If.yield %17 : !torch.bool
+          %20 = torch.aten.gt.int %7, %12 : !torch.int, !torch.int -> !torch.bool
+          torch.prim.If.yield %20 : !torch.bool
         }
-        %12 = torch.aten.__not__ %11 : !torch.bool -> !torch.bool
-        torch.prim.If %12 -> () {
+        %15 = torch.aten.__not__ %14 : !torch.bool -> !torch.bool
+        torch.prim.If %15 -> () {
           torch.prim.If.yield
         } else {
           torch.prim.RaiseException %str, %none : !torch.str, !torch.none
           torch.prim.If.yield
         }
-        %13 = torch.aten.lt.int %4, %int0 : !torch.int, !torch.int -> !torch.bool
-        %14 = torch.prim.If %13 -> (!torch.int) {
-          %17 = torch.aten.add.int %4, %7 : !torch.int, !torch.int -> !torch.int
-          torch.prim.If.yield %17 : !torch.int
+        %16 = torch.aten.lt.int %7, %int0 : !torch.int, !torch.int -> !torch.bool
+        %17 = torch.prim.If %16 -> (!torch.int) {
+          %20 = torch.aten.add.int %7, %10 : !torch.int, !torch.int -> !torch.int
+          torch.prim.If.yield %20 : !torch.int
         } else {
-          torch.prim.If.yield %4 : !torch.int
+          torch.prim.If.yield %7 : !torch.int
         }
-        %15 = torch.aten.eq.int %arg4, %14 : !torch.int, !torch.int -> !torch.bool
-        %16 = torch.prim.If %15 -> (!torch.bool) {
+        %18 = torch.aten.eq.int %arg4, %17 : !torch.int, !torch.int -> !torch.bool
+        %19 = torch.prim.If %18 -> (!torch.bool) {
           torch.prim.If.yield %true : !torch.bool
         } else {
           torch.prim.If.yield %arg6 : !torch.bool
         }
-        torch.prim.Loop.condition %true, iter(%16 : !torch.bool)
+        torch.prim.Loop.condition %true, iter(%19 : !torch.bool)
       } : (!torch.int, !torch.bool, !torch.bool) -> !torch.bool
-      torch.prim.If %3 -> () {
+      torch.prim.If %6 -> () {
         torch.prim.If %arg2 -> () {
-          %4 = torch.aten.append.t %0, %int1 : !torch.list<int>, !torch.int -> !torch.list<int>
+          %7 = torch.aten.append.t %0, %int1 : !torch.list<int>, !torch.int -> !torch.list<int>
           torch.prim.If.yield
         } else {
           torch.prim.If.yield
         }
         torch.prim.If.yield
       } else {
-        %4 = torch.aten.__getitem__.t %arg0, %arg4 : !torch.list<int>, !torch.int -> !torch.int
-        %5 = torch.aten.append.t %0, %4 : !torch.list<int>, !torch.int -> !torch.list<int>
+        %7 = torch.aten.__getitem__.t %arg0, %arg4 : !torch.list<int>, !torch.int -> !torch.int
+        %8 = torch.aten.append.t %0, %7 : !torch.list<int>, !torch.int -> !torch.list<int>
         torch.prim.If.yield
       }
       torch.prim.Loop.condition %true, iter()
@@ -4442,10 +4464,10 @@ module {
   func.func @__torch__.torch.jit._shape_functions.max_dim(%arg0: !torch.list<int>, %arg1: !torch.int, %arg2: !torch.bool) -> !torch.tuple<list<int>, list<int>> {
     %false = torch.constant.bool false
     %true = torch.constant.bool true
-    %int1 = torch.constant.int 1
-    %int0 = torch.constant.int 0
-    %str = torch.constant.str "AssertionError: "
     %none = torch.constant.none
+    %int0 = torch.constant.int 0
+    %int1 = torch.constant.int 1
+    %str = torch.constant.str "AssertionError: "
     %0 = torch.prim.ListConstruct %arg1 : (!torch.int) -> !torch.list<int>
     %1 = torch.prim.ListConstruct  : () -> !torch.list<int>
     %2 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
@@ -5441,10 +5463,6 @@ module {
     %0 = call @__torch__.torch.jit._shape_functions.unary(%arg0) : (!torch.list<int>) -> !torch.list<int>
     return %0 : !torch.list<int>
   }
-  func.func @"__torch_mlir_shape_fn.aten.remainder.Scalar"(%arg0: !torch.list<int>, %arg1: !torch.float) -> !torch.list<int> {
-    %0 = call @__torch__.torch.jit._shape_functions.unary(%arg0) : (!torch.list<int>) -> !torch.list<int>
-    return %0 : !torch.list<int>
-  }
   func.func @"__torch_mlir_shape_fn.aten.to.dtype"(%arg0: !torch.list<int>, %arg1: !torch.int, %arg2: !torch.bool, %arg3: !torch.bool, %arg4: !torch.optional<int>) -> !torch.list<int> {
     %0 = call @__torch__.torch.jit._shape_functions.unary(%arg0) : (!torch.list<int>) -> !torch.list<int>
     return %0 : !torch.list<int>
@@ -5524,6 +5542,10 @@ module {
     %0 = call @__torch__.torch.jit._shape_functions.unary(%arg0) : (!torch.list<int>) -> !torch.list<int>
     return %0 : !torch.list<int>
   }
+  func.func @"__torch_mlir_shape_fn.aten.remainder.Scalar"(%arg0: !torch.list<int>, %arg1: !torch.float) -> !torch.list<int> {
+    %0 = call @__torch__.torch.jit._shape_functions.unary(%arg0) : (!torch.list<int>) -> !torch.list<int>
+    return %0 : !torch.list<int>
+  }
   func.func @"__torch_mlir_shape_fn.aten.floor_divide.Scalar"(%arg0: !torch.list<int>, %arg1: !torch.float) -> !torch.list<int> {
     %0 = call @__torch__.torch.jit._shape_functions.unary(%arg0) : (!torch.list<int>) -> !torch.list<int>
     return %0 : !torch.list<int>
@@ -5573,98 +5595,26 @@ module {
     return %0 : !torch.list<int>
   }
   func.func @"__torch_mlir_shape_fn.aten.var.dim"(%arg0: !torch.list<int>, %arg1: !torch.optional<list<int>>, %arg2: !torch.bool, %arg3: !torch.bool) -> !torch.list<int> {
-    %true = torch.constant.bool true
     %none = torch.constant.none
-    %int0 = torch.constant.int 0
-    %0 = torch.aten.__is__ %arg1, %none : !torch.optional<list<int>>, !torch.none -> !torch.bool
-    %1 = torch.prim.If %0 -> (!torch.bool) {
-      torch.prim.If.yield %true : !torch.bool
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      %6 = torch.aten.len.t %5 : !torch.list<int> -> !torch.int
-      %7 = torch.aten.eq.int %6, %int0 : !torch.int, !torch.int -> !torch.bool
-      torch.prim.If.yield %7 : !torch.bool
-    }
-    %2 = torch.prim.If %1 -> (!torch.list<int>) {
-      %5 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
-      %6 = torch.prim.ListConstruct  : () -> !torch.list<int>
-      torch.prim.Loop %5, %true, init() {
-      ^bb0(%arg4: !torch.int):
-        %7 = torch.aten.append.t %6, %arg4 : !torch.list<int>, !torch.int -> !torch.list<int>
-        torch.prim.Loop.condition %true, iter()
-      } : (!torch.int, !torch.bool) -> ()
-      torch.prim.If.yield %6 : !torch.list<int>
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      torch.prim.If.yield %5 : !torch.list<int>
-    }
-    %3 = torch.derefine %none : !torch.none to !torch.any
-    %4 = call @__torch__.torch.jit._shape_functions.mean_dim(%arg0, %2, %arg3, %3) : (!torch.list<int>, !torch.list<int>, !torch.bool, !torch.any) -> !torch.list<int>
-    return %4 : !torch.list<int>
+    %0 = torch.derefine %none : !torch.none to !torch.any
+    %1 = call @__torch__.torch.jit._shape_functions.sum_mean_dim(%arg0, %arg1, %arg3, %0) : (!torch.list<int>, !torch.optional<list<int>>, !torch.bool, !torch.any) -> !torch.list<int>
+    return %1 : !torch.list<int>
   }
   func.func @"__torch_mlir_shape_fn.aten.var.correction"(%arg0: !torch.list<int>, %arg1: !torch.optional<list<int>>, %arg2: !torch.optional<int>, %arg3: !torch.bool) -> !torch.list<int> {
-    %true = torch.constant.bool true
     %none = torch.constant.none
-    %int0 = torch.constant.int 0
-    %0 = torch.aten.__is__ %arg1, %none : !torch.optional<list<int>>, !torch.none -> !torch.bool
-    %1 = torch.prim.If %0 -> (!torch.bool) {
-      torch.prim.If.yield %true : !torch.bool
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      %6 = torch.aten.len.t %5 : !torch.list<int> -> !torch.int
-      %7 = torch.aten.eq.int %6, %int0 : !torch.int, !torch.int -> !torch.bool
-      torch.prim.If.yield %7 : !torch.bool
-    }
-    %2 = torch.prim.If %1 -> (!torch.list<int>) {
-      %5 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
-      %6 = torch.prim.ListConstruct  : () -> !torch.list<int>
-      torch.prim.Loop %5, %true, init() {
-      ^bb0(%arg4: !torch.int):
-        %7 = torch.aten.append.t %6, %arg4 : !torch.list<int>, !torch.int -> !torch.list<int>
-        torch.prim.Loop.condition %true, iter()
-      } : (!torch.int, !torch.bool) -> ()
-      torch.prim.If.yield %6 : !torch.list<int>
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      torch.prim.If.yield %5 : !torch.list<int>
-    }
-    %3 = torch.derefine %none : !torch.none to !torch.any
-    %4 = call @__torch__.torch.jit._shape_functions.mean_dim(%arg0, %2, %arg3, %3) : (!torch.list<int>, !torch.list<int>, !torch.bool, !torch.any) -> !torch.list<int>
-    return %4 : !torch.list<int>
+    %0 = torch.derefine %none : !torch.none to !torch.any
+    %1 = call @__torch__.torch.jit._shape_functions.sum_mean_dim(%arg0, %arg1, %arg3, %0) : (!torch.list<int>, !torch.optional<list<int>>, !torch.bool, !torch.any) -> !torch.list<int>
+    return %1 : !torch.list<int>
   }
   func.func @"__torch_mlir_shape_fn.aten.std"(%arg0: !torch.list<int>, %arg1: !torch.bool) -> !torch.list<int> {
     %0 = torch.prim.ListConstruct  : () -> !torch.list<int>
     return %0 : !torch.list<int>
   }
   func.func @"__torch_mlir_shape_fn.aten.std.dim"(%arg0: !torch.list<int>, %arg1: !torch.optional<list<int>>, %arg2: !torch.bool, %arg3: !torch.bool) -> !torch.list<int> {
-    %true = torch.constant.bool true
     %none = torch.constant.none
-    %int0 = torch.constant.int 0
-    %0 = torch.aten.__is__ %arg1, %none : !torch.optional<list<int>>, !torch.none -> !torch.bool
-    %1 = torch.prim.If %0 -> (!torch.bool) {
-      torch.prim.If.yield %true : !torch.bool
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      %6 = torch.aten.len.t %5 : !torch.list<int> -> !torch.int
-      %7 = torch.aten.eq.int %6, %int0 : !torch.int, !torch.int -> !torch.bool
-      torch.prim.If.yield %7 : !torch.bool
-    }
-    %2 = torch.prim.If %1 -> (!torch.list<int>) {
-      %5 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
-      %6 = torch.prim.ListConstruct  : () -> !torch.list<int>
-      torch.prim.Loop %5, %true, init() {
-      ^bb0(%arg4: !torch.int):
-        %7 = torch.aten.append.t %6, %arg4 : !torch.list<int>, !torch.int -> !torch.list<int>
-        torch.prim.Loop.condition %true, iter()
-      } : (!torch.int, !torch.bool) -> ()
-      torch.prim.If.yield %6 : !torch.list<int>
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      torch.prim.If.yield %5 : !torch.list<int>
-    }
-    %3 = torch.derefine %none : !torch.none to !torch.any
-    %4 = call @__torch__.torch.jit._shape_functions.mean_dim(%arg0, %2, %arg3, %3) : (!torch.list<int>, !torch.list<int>, !torch.bool, !torch.any) -> !torch.list<int>
-    return %4 : !torch.list<int>
+    %0 = torch.derefine %none : !torch.none to !torch.any
+    %1 = call @__torch__.torch.jit._shape_functions.sum_mean_dim(%arg0, %arg1, %arg3, %0) : (!torch.list<int>, !torch.optional<list<int>>, !torch.bool, !torch.any) -> !torch.list<int>
+    return %1 : !torch.list<int>
   }
   func.func @"__torch_mlir_shape_fn.aten.argmax"(%arg0: !torch.list<int>, %arg1: !torch.optional<int>, %arg2: !torch.bool) -> !torch.list<int> {
     %none = torch.constant.none
@@ -5719,64 +5669,14 @@ module {
     return %1 : !torch.tuple<list<int>, list<int>>
   }
   func.func @"__torch_mlir_shape_fn.aten.mean.dim"(%arg0: !torch.list<int>, %arg1: !torch.optional<list<int>>, %arg2: !torch.bool, %arg3: !torch.optional<int>) -> !torch.list<int> {
-    %true = torch.constant.bool true
-    %none = torch.constant.none
-    %int0 = torch.constant.int 0
-    %0 = torch.aten.__is__ %arg1, %none : !torch.optional<list<int>>, !torch.none -> !torch.bool
-    %1 = torch.prim.If %0 -> (!torch.bool) {
-      torch.prim.If.yield %true : !torch.bool
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      %6 = torch.aten.len.t %5 : !torch.list<int> -> !torch.int
-      %7 = torch.aten.eq.int %6, %int0 : !torch.int, !torch.int -> !torch.bool
-      torch.prim.If.yield %7 : !torch.bool
-    }
-    %2 = torch.prim.If %1 -> (!torch.list<int>) {
-      %5 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
-      %6 = torch.prim.ListConstruct  : () -> !torch.list<int>
-      torch.prim.Loop %5, %true, init() {
-      ^bb0(%arg4: !torch.int):
-        %7 = torch.aten.append.t %6, %arg4 : !torch.list<int>, !torch.int -> !torch.list<int>
-        torch.prim.Loop.condition %true, iter()
-      } : (!torch.int, !torch.bool) -> ()
-      torch.prim.If.yield %6 : !torch.list<int>
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      torch.prim.If.yield %5 : !torch.list<int>
-    }
-    %3 = torch.derefine %arg3 : !torch.optional<int> to !torch.any
-    %4 = call @__torch__.torch.jit._shape_functions.mean_dim(%arg0, %2, %arg2, %3) : (!torch.list<int>, !torch.list<int>, !torch.bool, !torch.any) -> !torch.list<int>
-    return %4 : !torch.list<int>
+    %0 = torch.derefine %arg3 : !torch.optional<int> to !torch.any
+    %1 = call @__torch__.torch.jit._shape_functions.sum_mean_dim(%arg0, %arg1, %arg2, %0) : (!torch.list<int>, !torch.optional<list<int>>, !torch.bool, !torch.any) -> !torch.list<int>
+    return %1 : !torch.list<int>
   }
   func.func @"__torch_mlir_shape_fn.aten.sum.dim_IntList"(%arg0: !torch.list<int>, %arg1: !torch.optional<list<int>>, %arg2: !torch.bool, %arg3: !torch.optional<int>) -> !torch.list<int> {
-    %true = torch.constant.bool true
-    %none = torch.constant.none
-    %int0 = torch.constant.int 0
-    %0 = torch.aten.__is__ %arg1, %none : !torch.optional<list<int>>, !torch.none -> !torch.bool
-    %1 = torch.prim.If %0 -> (!torch.bool) {
-      torch.prim.If.yield %true : !torch.bool
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      %6 = torch.aten.len.t %5 : !torch.list<int> -> !torch.int
-      %7 = torch.aten.eq.int %6, %int0 : !torch.int, !torch.int -> !torch.bool
-      torch.prim.If.yield %7 : !torch.bool
-    }
-    %2 = torch.prim.If %1 -> (!torch.list<int>) {
-      %5 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
-      %6 = torch.prim.ListConstruct  : () -> !torch.list<int>
-      torch.prim.Loop %5, %true, init() {
-      ^bb0(%arg4: !torch.int):
-        %7 = torch.aten.append.t %6, %arg4 : !torch.list<int>, !torch.int -> !torch.list<int>
-        torch.prim.Loop.condition %true, iter()
-      } : (!torch.int, !torch.bool) -> ()
-      torch.prim.If.yield %6 : !torch.list<int>
-    } else {
-      %5 = torch.prim.unchecked_cast %arg1 : !torch.optional<list<int>> -> !torch.list<int>
-      torch.prim.If.yield %5 : !torch.list<int>
-    }
-    %3 = torch.derefine %arg3 : !torch.optional<int> to !torch.any
-    %4 = call @__torch__.torch.jit._shape_functions.mean_dim(%arg0, %2, %arg2, %3) : (!torch.list<int>, !torch.list<int>, !torch.bool, !torch.any) -> !torch.list<int>
-    return %4 : !torch.list<int>
+    %0 = torch.derefine %arg3 : !torch.optional<int> to !torch.any
+    %1 = call @__torch__.torch.jit._shape_functions.sum_mean_dim(%arg0, %arg1, %arg2, %0) : (!torch.list<int>, !torch.optional<list<int>>, !torch.bool, !torch.any) -> !torch.list<int>
+    return %1 : !torch.list<int>
   }
   func.func @"__torch_mlir_shape_fn.aten.permute"(%arg0: !torch.list<int>, %arg1: !torch.list<int>) -> !torch.list<int> {
     %0 = call @__torch__.torch.jit._shape_functions.permute(%arg0, %arg1) : (!torch.list<int>, !torch.list<int>) -> !torch.list<int>
@@ -6441,6 +6341,10 @@ module {
     %0 = call @"__torch_mlir_shape_fn.aten.convolution"(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8) : (!torch.list<int>, !torch.list<int>, !torch.optional<list<int>>, !torch.list<int>, !torch.list<int>, !torch.list<int>, !torch.bool, !torch.list<int>, !torch.int) -> !torch.list<int>
     return %0 : !torch.list<int>
   }
+  func.func @"__torch_mlir_shape_fn.aten._convolution.deprecated"(%arg0: !torch.list<int>, %arg1: !torch.list<int>, %arg2: !torch.optional<list<int>>, %arg3: !torch.list<int>, %arg4: !torch.list<int>, %arg5: !torch.list<int>, %arg6: !torch.bool, %arg7: !torch.list<int>, %arg8: !torch.int, %arg9: !torch.bool, %arg10: !torch.bool, %arg11: !torch.bool) -> !torch.list<int> {
+    %0 = call @"__torch_mlir_shape_fn.aten.convolution"(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8) : (!torch.list<int>, !torch.list<int>, !torch.optional<list<int>>, !torch.list<int>, !torch.list<int>, !torch.list<int>, !torch.bool, !torch.list<int>, !torch.int) -> !torch.list<int>
+    return %0 : !torch.list<int>
+  }
   func.func @"__torch_mlir_shape_fn.aten.flip"(%arg0: !torch.list<int>, %arg1: !torch.list<int>) -> !torch.list<int> {
     return %arg0 : !torch.list<int>
   }
@@ -6885,25 +6789,9 @@ module {
     return %none : !torch.none
   }
   func.func @"__torch_mlir_shape_fn.aten.linalg_vector_norm"(%arg0: !torch.list<int>, %arg1: !torch.float, %arg2: !torch.optional<list<int>>, %arg3: !torch.bool, %arg4: !torch.optional<int>) -> !torch.list<int> {
-    %true = torch.constant.bool true
-    %none = torch.constant.none
-    %0 = torch.aten.__is__ %arg2, %none : !torch.optional<list<int>>, !torch.none -> !torch.bool
-    %1 = torch.prim.If %0 -> (!torch.list<int>) {
-      %4 = torch.aten.len.t %arg0 : !torch.list<int> -> !torch.int
-      %5 = torch.prim.ListConstruct  : () -> !torch.list<int>
-      torch.prim.Loop %4, %true, init() {
-      ^bb0(%arg5: !torch.int):
-        %6 = torch.aten.append.t %5, %arg5 : !torch.list<int>, !torch.int -> !torch.list<int>
-        torch.prim.Loop.condition %true, iter()
-      } : (!torch.int, !torch.bool) -> ()
-      torch.prim.If.yield %5 : !torch.list<int>
-    } else {
-      %4 = torch.prim.unchecked_cast %arg2 : !torch.optional<list<int>> -> !torch.list<int>
-      torch.prim.If.yield %4 : !torch.list<int>
-    }
-    %2 = torch.derefine %arg4 : !torch.optional<int> to !torch.any
-    %3 = call @__torch__.torch.jit._shape_functions.mean_dim(%arg0, %1, %arg3, %2) : (!torch.list<int>, !torch.list<int>, !torch.bool, !torch.any) -> !torch.list<int>
-    return %3 : !torch.list<int>
+    %0 = torch.derefine %arg4 : !torch.optional<int> to !torch.any
+    %1 = call @__torch__.torch.jit._shape_functions.sum_mean_dim(%arg0, %arg2, %arg3, %0) : (!torch.list<int>, !torch.optional<list<int>>, !torch.bool, !torch.any) -> !torch.list<int>
+    return %1 : !torch.list<int>
   }
 }
 )mlir");

@@ -834,6 +834,68 @@ public:
 };
 } // namespace
 
+// Decompose aten.flatten.using_ints into aten.view op.
+namespace {
+class DecomposeAtenFlattenUsingIntsOp
+    : public OpRewritePattern<AtenFlattenUsingIntsOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(AtenFlattenUsingIntsOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value self = op.self();
+    MLIRContext *context = op.getContext();
+    int64_t rank = getTensorRank(self);
+    if (rank < 0)
+      return rewriter.notifyMatchFailure(op, "unimplemented: unranked tensor");
+
+    int64_t start, end;
+    if (!matchPattern(op.start_dim(), m_TorchConstantInt(&start)) ||
+        !matchPattern(op.end_dim(), m_TorchConstantInt(&end))) {
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: requires start and end dims to be constants");
+    }
+
+    SmallVector<Value, 4> newSizes;
+    if (rank == 0) {
+      Value one =
+          rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(1));
+      newSizes.push_back(one);
+    } else {
+      start = toPositiveDim(start, rank);
+      end = toPositiveDim(end, rank);
+
+      if (start > end) {
+        return rewriter.notifyMatchFailure(
+            op, "expected end dim larger than start dim");
+      }
+
+      newSizes.reserve(rank - end + start);
+      for (size_t k = 0; k < start; ++k) {
+        Value dim =
+            rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(k));
+        newSizes.push_back(
+            rewriter.create<AtenSizeIntOp>(loc, self, /*dim=*/dim));
+      }
+      Value flattenDimSize =
+          rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(-1));
+      newSizes.push_back(flattenDimSize);
+      for (size_t k = end + 1; k < rank; ++k) {
+        Value dim =
+            rewriter.create<ConstantIntOp>(loc, rewriter.getI64IntegerAttr(k));
+        newSizes.push_back(
+            rewriter.create<AtenSizeIntOp>(loc, self, /*dim=*/dim));
+      }
+    }
+    Value newSizeList = rewriter.create<PrimListConstructOp>(
+        loc, ListType::get(IntType::get(context)), newSizes);
+    rewriter.replaceOpWithNewOp<AtenViewOp>(op, op.getType(), op.self(),
+                                            newSizeList);
+    return success();
+  }
+};
+} // namespace
+
 // Decompose aten.expand into aten.broadcast_to op.
 namespace {
 class DecomposeAtenExpandOp : public OpRewritePattern<AtenExpandOp> {
@@ -927,13 +989,14 @@ public:
 };
 } // namespace
 
-// Decompose aten.convolution_overrideable to aten.convolution
+// Decompose aten._convolution-like to aten.convolution
 namespace {
-class DecomposeAten_ConvolutionOp
-    : public OpRewritePattern<Aten_ConvolutionOp> {
+template<typename ConvolutionLikeOp>
+class DecomposeAten_ConvolutionLikeOp
+    : public OpRewritePattern<ConvolutionLikeOp> {
 public:
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(Aten_ConvolutionOp op,
+  using OpRewritePattern<ConvolutionLikeOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(ConvolutionLikeOp op,
                                 PatternRewriter &rewriter) const override {
 
     rewriter.replaceOpWithNewOp<AtenConvolutionOp>(
@@ -1155,47 +1218,6 @@ public:
 };
 } // namespace
 
-namespace {
-class DecomposeAtenNativeDropoutOp : public OpRewritePattern<AtenNativeDropoutOp> {
-public:
-  using OpRewritePattern::OpRewritePattern;
-  LogicalResult matchAndRewrite(AtenNativeDropoutOp op,
-                                PatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    Value input = op.input();
-    Value prob = op.p();
-    bool train = false;
-    if (!matchPattern(op.train(), m_TorchConstantBool(&train)))
-      return rewriter.notifyMatchFailure(op, "train must be a boolean constant");
-
-    BaseTensorType inputType = input.getType().cast<BaseTensorType>();
-    if (!train) {
-      // TODO(yancey.yx): supports inference mode
-      return op.emitError(
-          "native_dropout does not support argument train is false");
-    }
-    if (!inputType.hasDtype() || !inputType.getDtype().isa<mlir::FloatType>())
-      return rewriter.notifyMatchFailure(
-          op, "only support floating type input for training mode");
-    Value noneVal = rewriter.create<ConstantNoneOp>(loc);
-    Value floatOne =
-        rewriter.create<ConstantFloatOp>(loc, rewriter.getF64FloatAttr(1.0));
-    Value oneMinusP = rewriter.create<AtenSubFloatOp>(loc, floatOne, prob);
-    Value boolMask = rewriter.create<ValsemVariantAtenBernoulliFloatOp>(
-        loc, inputType, input, oneMinusP, /*generator=*/noneVal);
-    Value maskedInput =
-        rewriter.create<AtenMulTensorOp>(loc, inputType, boolMask, input);
-    Value output =
-        rewriter.create<AtenMulScalarOp>(loc, inputType, maskedInput, oneMinusP);
-    Value one =
-        rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(1));
-    boolMask = rewriter.create<AtenGeScalarOp>(
-        loc, op.getResult(1).getType(), boolMask, one);
-    rewriter.replaceOp(op, {output, boolMask});
-  return success();
-  }
-};
-} // namespace
 // Decompose aten.var into: aten.var.dim op.
 namespace {
 class DecomposeAtenVarOp : public OpRewritePattern<AtenVarOp> {
@@ -2506,6 +2528,11 @@ public:
 namespace {
 class DecomposeComplexOpsPass
     : public DecomposeComplexOpsBase<DecomposeComplexOpsPass> {
+public:
+  DecomposeComplexOpsPass() = default;
+  DecomposeComplexOpsPass(ArrayRef<std::string> legalOps) {
+    this->legalOps = legalOps;
+  }
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
@@ -2532,6 +2559,8 @@ class DecomposeComplexOpsPass
     target.addIllegalOp<AtenRepeatOp>();
     patterns.add<DecomposeAtenExpandOp>(context);
     target.addIllegalOp<AtenExpandOp>();
+    patterns.add<DecomposeAtenFlattenUsingIntsOp>(context);
+    target.addIllegalOp<AtenFlattenUsingIntsOp>();
     patterns.add<DecomposeAtenWhereScalarOp>(context);
     target.addIllegalOp<AtenWhereScalarOp>();
     patterns.add<DecomposeAtenWhereScalarOtherOp>(context);
@@ -2578,8 +2607,10 @@ class DecomposeComplexOpsPass
     patterns.add<DecomposeAtenNativeBatchNormOp>(context);
     target.addIllegalOp<AtenConvolutionOverrideableOp>();
     patterns.add<DecomposeAtenConvolutionOverrideableOp>(context);
-    target.addIllegalOp<Aten_ConvolutionOp>();
-    patterns.add<DecomposeAten_ConvolutionOp>(context);
+    target.addIllegalOp<Aten_ConvolutionOp, Aten_ConvolutionDeprecatedOp>();
+    patterns.add<DecomposeAten_ConvolutionLikeOp<Aten_ConvolutionOp>,
+                 DecomposeAten_ConvolutionLikeOp<Aten_ConvolutionDeprecatedOp>>(
+        context);
     target.addIllegalOp<AtenConv2dOp>();
     patterns.add<DecomposeAtenConv2dOp>(context);
     patterns.add<DecomposeAtenArangeOp>(context);
@@ -2635,8 +2666,6 @@ class DecomposeComplexOpsPass
     patterns.add<DecomposeAten_ToCopyOp>(context);
     target.addIllegalOp<Aten_ToCopyOp>();
     patterns.add<DecomposeAtenDropoutOp>(context);
-    patterns.add<DecomposeAtenNativeDropoutOp>(context);
-    target.addIllegalOp<AtenNativeDropoutOp>(); 
     target.addIllegalOp<AtenDropoutOp>();
     target.addIllegalOp<AtenNewEmptyOp>();
     patterns.add<DecomposeAtenNewEmptyOp>(context);
@@ -2673,6 +2702,10 @@ class DecomposeComplexOpsPass
     patterns.add<DecomposeAten_EmbeddingBagOp>(context);
     target.addIllegalOp<Aten_EmbeddingBagOp>();
 
+    for (std::string opName : legalOps) {
+      target.addLegalOp(OperationName(opName, context));
+    }
+
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
       return signalPassFailure();
@@ -2680,7 +2713,9 @@ class DecomposeComplexOpsPass
   }
 };
 } // namespace
+
 std::unique_ptr<OperationPass<func::FuncOp>>
-mlir::torch::Torch::createDecomposeComplexOpsPass() {
-  return std::make_unique<DecomposeComplexOpsPass>();
+mlir::torch::Torch::createDecomposeComplexOpsPass(
+    ArrayRef<std::string> legalOps) {
+  return std::make_unique<DecomposeComplexOpsPass>(legalOps);
 }

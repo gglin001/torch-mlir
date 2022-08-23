@@ -337,6 +337,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::convolution : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int) -> (Tensor)")
     emit("aten::convolution_overrideable : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int) -> (Tensor)")
     emit("aten::_convolution : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int, bool, bool, bool, bool) -> (Tensor)")
+    emit("aten::_convolution.deprecated : (Tensor, Tensor, Tensor?, int[], int[], int[], bool, int[], int, bool, bool, bool) -> (Tensor)")
     emit("aten::flip : (Tensor, int[]) -> (Tensor)")
     emit(
         "aten::native_batch_norm : (Tensor, Tensor?, Tensor?, Tensor?, Tensor?, bool, float, float) -> (Tensor, Tensor, Tensor)"
@@ -632,16 +633,6 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit(
         "quantized::linear : (Tensor, __torch__.torch.classes.quantized.LinearPackedParamsBase, float, int) -> (Tensor)",
         traits=["HasValueSemantics"])
-
-    # ==========================================================================
-    # `_torch_mlir_custom_op_example::` namespace.
-    #
-    # This is a demonstration of supporting an operation defined in a PyTorch
-    # extension.
-    # ==========================================================================
-
-    # TODO: Re-enable after MacOS support is fixed for the extension.
-    #emit("_torch_mlir_custom_op_example::identity : (Tensor) -> (Tensor)")
 
 
 def dump_registered_ops(outfile: TextIO, registry: Registry):
