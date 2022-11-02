@@ -295,7 +295,7 @@ LogicalResult ClassTypeOp::verify() {
 
 OperandRange
 PrimLoopOp::getSuccessorEntryOperands(Optional<unsigned int> index) {
-  assert(index.hasValue() && index.value() == 0);
+  assert(index.has_value() && index.value() == 0);
   return iterArgsInit();
 }
 
@@ -670,6 +670,32 @@ OpFoldResult AtenSqueezeDimOp::fold(ArrayRef<Attribute> operands) {
     if (tensorType.hasSizes() && tensorType.getSizes().size() == 0)
       return getOperand(0);
   }
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// AtenRoundOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenRoundOp::fold(ArrayRef<Attribute> operands) {
+  if (auto selfType = self().getType().dyn_cast<BaseTensorType>()) {
+    if (selfType.hasDtype() && selfType.getDtype().isa<mlir::IntegerType>())
+      return self();
+  }
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// AtenTypeAsOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenTypeAsOp::fold(ArrayRef<Attribute> operands) {
+  Type inType = self().getType();
+  Type newType = other().getType();
+
+  if (inType == newType)
+    return self();
+
   return nullptr;
 }
 
@@ -1578,6 +1604,34 @@ void Torch::ConstantFloatOp::getAsmResultNames(
 }
 
 //===----------------------------------------------------------------------===//
+// ConstantNumberOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult Torch::ConstantNumberOp::fold(ArrayRef<Attribute> operands) {
+  return valueAttr();
+}
+
+void Torch::ConstantNumberOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(+[](Torch::ConstantNumberOp op, PatternRewriter &rewriter) {
+    Location loc = op->getLoc();
+
+    Value constValue;
+    Attribute value = op.valueAttr();
+    if (auto floatValue = value.dyn_cast<mlir::FloatAttr>()) {
+      constValue = rewriter.create<Torch::ConstantFloatOp>(loc, floatValue);
+    } else if (auto intValue = value.dyn_cast<mlir::IntegerAttr>()) {
+      constValue = rewriter.create<Torch::ConstantIntOp>(loc, intValue);
+    } else {
+      return failure();
+    }
+    rewriter.replaceOpWithNewOp<Torch::DerefineOp>(op, op.getType(),
+                                                   constValue);
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
 // ConstantBoolOp
 //===----------------------------------------------------------------------===//
 
@@ -1675,6 +1729,56 @@ void AtenAddTOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 
     rewriter.replaceOpWithNewOp<Torch::PrimListConstructOp>(op, op.getType(),
                                                             concatenatedList);
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// AtenSliceTOp
+//===----------------------------------------------------------------------===//
+
+void AtenSliceTOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                               MLIRContext *context) {
+  patterns.add(+[](AtenSliceTOp op, PatternRewriter &rewriter) {
+    auto valueList = op.l();
+    auto listConstructOp = valueList.getDefiningOp<PrimListConstructOp>();
+    if (!listConstructOp || isListPotentiallyMutated(listConstructOp)) {
+      return failure();
+    }
+
+    SmallVector<Value> listElements =
+        llvm::to_vector<4>(listConstructOp.elements());
+    int64_t size = static_cast<int64_t>(listElements.size());
+
+    int64_t start;
+    int64_t end;
+    int64_t step;
+    if (op.start().getType().isa<Torch::NoneType>()) {
+      start = 0;
+    } else if (!matchPattern(op.start(), m_TorchConstantInt(&start))) {
+      return failure();
+    }
+    if (op.end().getType().isa<Torch::NoneType>()) {
+      end = listElements.size();
+    } else if (!matchPattern(op.end(), m_TorchConstantInt(&end))) {
+      return failure();
+    }
+    if (!matchPattern(op.step(), m_TorchConstantInt(&step))) {
+      return failure();
+    }
+
+    start = start >= 0 ? start : start + size;
+    start = start >= 0 ? start : 0;
+    end = end >= 0 ? end : end + size;
+    end = end < size ? end : size;
+    SmallVector<Value> newListElements;
+
+    for (int64_t i = start; i < end; i += step) {
+      newListElements.push_back(listElements[i]);
+    }
+
+    rewriter.replaceOpWithNewOp<PrimListConstructOp>(
+        op, Torch::ListType::get(listElements[0].getType()), newListElements);
     return success();
   });
 }
@@ -1872,15 +1976,39 @@ OpFoldResult Aten__Contains__IntListOp::fold(ArrayRef<Attribute> operands) {
 }
 
 using BinaryIntOperatorFn = std::function<int64_t(int64_t, int64_t)>;
-template <typename OpTy>
-static OpFoldResult atenBinaryIntOperatorFoldHelper(OpTy op,
-                                                    BinaryIntOperatorFn f) {
-  int64_t lhs, rhs;
-  if (!matchPattern(op.getOperand(0), m_TorchConstantInt(&lhs)) ||
-      !matchPattern(op.getOperand(1), m_TorchConstantInt(&rhs)))
+static OpFoldResult
+atenBinaryIntOperatorFoldHelper(ArrayRef<Attribute> operands,
+                                BinaryIntOperatorFn f) {
+  auto intLhs = operands[0].dyn_cast_or_null<IntegerAttr>();
+  auto intRhs = operands[1].dyn_cast_or_null<IntegerAttr>();
+  if (!intLhs || !intRhs) {
     return nullptr;
+  }
+  return IntegerAttr::get(
+      intLhs.getType(),
+      f(intLhs.getValue().getSExtValue(), intRhs.getValue().getSExtValue()));
+}
 
-  return getI64IntegerAttr(op.getContext(), f(lhs, rhs));
+using BinaryFloatOperatorFn = std::function<double(double, double)>;
+static OpFoldResult
+atenBinaryFloatOperatorFoldHelper(ArrayRef<Attribute> operands,
+                                  BinaryFloatOperatorFn f) {
+  double lhs, rhs;
+  auto parseDoubleAttribute = [](Attribute attr, double &value) -> bool {
+    if (auto intLhs = attr.dyn_cast_or_null<IntegerAttr>()) {
+      value = static_cast<double>(intLhs.getValue().getSExtValue());
+    } else if (auto floatLhs = attr.dyn_cast_or_null<FloatAttr>()) {
+      value = floatLhs.getValue().convertToDouble();
+    } else {
+      return false;
+    }
+    return true;
+  };
+  if (!parseDoubleAttribute(operands[0], lhs) ||
+      !parseDoubleAttribute(operands[1], rhs)) {
+    return nullptr;
+  }
+  return getF64FloatAttr(operands[0].getContext(), f(lhs, rhs));
 }
 
 //===----------------------------------------------------------------------===//
@@ -1889,7 +2017,7 @@ static OpFoldResult atenBinaryIntOperatorFoldHelper(OpTy op,
 
 OpFoldResult AtenFloordivIntOp::fold(ArrayRef<Attribute> operands) {
   return atenBinaryIntOperatorFoldHelper(
-      *this, [](int64_t a, int64_t b) { return std::floor(a / (double)b); });
+    operands, [](int64_t a, int64_t b) { return std::floor(a / (double)b); });
 }
 
 //===----------------------------------------------------------------------===//
@@ -1898,7 +2026,7 @@ OpFoldResult AtenFloordivIntOp::fold(ArrayRef<Attribute> operands) {
 
 OpFoldResult AtenRemainderIntOp::fold(ArrayRef<Attribute> operands) {
   return atenBinaryIntOperatorFoldHelper(
-      *this, [](int64_t a, int64_t b) { return a % b; });
+    operands, [](int64_t a, int64_t b) { return a % b; });
 }
 
 //===----------------------------------------------------------------------===//
@@ -1907,7 +2035,7 @@ OpFoldResult AtenRemainderIntOp::fold(ArrayRef<Attribute> operands) {
 
 OpFoldResult AtenAddIntOp::fold(ArrayRef<Attribute> operands) {
   return atenBinaryIntOperatorFoldHelper(
-      *this, [](int64_t a, int64_t b) { return a + b; });
+    operands, [](int64_t a, int64_t b) { return a + b; });
 }
 
 //===----------------------------------------------------------------------===//
@@ -1916,7 +2044,7 @@ OpFoldResult AtenAddIntOp::fold(ArrayRef<Attribute> operands) {
 
 OpFoldResult AtenSubIntOp::fold(ArrayRef<Attribute> operands) {
   return atenBinaryIntOperatorFoldHelper(
-      *this, [](int64_t a, int64_t b) { return a - b; });
+    operands, [](int64_t a, int64_t b) { return a - b; });
 }
 
 //===----------------------------------------------------------------------===//
@@ -1932,6 +2060,54 @@ OpFoldResult AtenMulIntOp::fold(ArrayRef<Attribute> operands) {
   if (lConstant && rConstant)
     return getI64IntegerAttr(getContext(), lhs * rhs);
   return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// AtenSubOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenSubOp::fold(ArrayRef<Attribute> operands) {
+  if (!operands[0] || !operands[1]) {
+    return nullptr;
+  }
+
+  if (operands[0].isa<IntegerAttr>() && operands[1].isa<IntegerAttr>()) {
+    return atenBinaryIntOperatorFoldHelper(
+        operands, [](int64_t a, int64_t b) -> int64_t { return a - b; });
+  }
+  return atenBinaryFloatOperatorFoldHelper(
+      operands, [](double a, double b) -> double { return a - b; });
+}
+
+//===----------------------------------------------------------------------===//
+// AtenDivOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenDivOp::fold(ArrayRef<Attribute> operands) {
+  if (!operands[0] || !operands[1]) {
+    return nullptr;
+  }
+  // Since AtenDivOp always returns float value, we don't need to deal with the
+  // case where the operands are both integers separately.
+  return atenBinaryFloatOperatorFoldHelper(
+      operands, [](double a, double b) -> double { return a / b; });
+}
+
+//===----------------------------------------------------------------------===//
+// AtenCeilScalarOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenCeilScalarOp::fold(ArrayRef<Attribute> operands) {
+  if (!operands[0]) {
+    return nullptr;
+  }
+  auto floatValue = operands[0].dyn_cast_or_null<FloatAttr>();
+  if (!floatValue) {
+    return nullptr;
+  }
+  return getI64IntegerAttr(
+      getContext(),
+      static_cast<int64_t>(std::ceil(floatValue.getValue().convertToDouble())));
 }
 
 //===----------------------------------------------------------------------===//
@@ -2011,6 +2187,20 @@ OpFoldResult AtenDivFloatOp::fold(ArrayRef<Attribute> operands) {
   return nullptr;
 }
 
+//===----------------------------------------------------------------------===//
+// AtenDivIntOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenDivIntOp::fold(ArrayRef<Attribute> operands) {
+  int64_t lhs, rhs;
+  bool lConstant = matchPattern(getOperand(0), m_TorchConstantInt(&lhs));
+  bool rConstant = matchPattern(getOperand(1), m_TorchConstantInt(&rhs));
+  if (lConstant && rConstant)
+    return getF64FloatAttr(getContext(), double(lhs) / rhs);
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
 // AtenCeilFloatOp
 //===----------------------------------------------------------------------===//
 
@@ -2020,8 +2210,6 @@ OpFoldResult AtenCeilFloatOp::fold(ArrayRef<Attribute> operands) {
     return getI64IntegerAttr(getContext(), std::ceil(c));
   return nullptr;
 }
-
-//===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
 // PrimMaxIntOp
@@ -2189,11 +2377,7 @@ LogicalResult GlobalSlotModuleInitializerOp::verify() {
     // We only permit a small set of ops in the module initializer.
     // These ops are essentially those which can be produced by the IValue
     // importer.
-    if (isa<GlobalSlotModuleInitializerOp, InitializeGlobalSlotsOp,
-            PrimListConstructOp, PrimDictConstructOp, PrimTupleConstructOp,
-            ConstantBoolOp, ConstantStrOp, ConstantIntOp, ConstantFloatOp,
-            ConstantNoneOp, NonValueTensorLiteralOp, PerTensorAffineCreateOp,
-            LinearParamsCreateOp>(op))
+    if (op->hasTrait<mlir::torch::Torch::OpTrait::AllowedInModuleInitializer>())
       return WalkResult::advance();
     op->emitOpError() << "is not allowed in a module initializer";
     return WalkResult::interrupt();

@@ -4,9 +4,9 @@
 # Also available under a BSD-style license. See LICENSE.
 
 import torch
-from torch_mlir_e2e_test.torchscript.framework import TestUtils
-from torch_mlir_e2e_test.torchscript.registry import register_test_case
-from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
+from torch_mlir_e2e_test.framework import TestUtils
+from torch_mlir_e2e_test.registry import register_test_case
+from torch_mlir_e2e_test.annotations import annotate_args, export
 
 # ==============================================================================
 
@@ -515,7 +515,7 @@ class _ConvolutionDeprecated2DCudnnModule(torch.nn.Module):
                                            cudnn_enabled=True)
 
 @register_test_case(module_factory=lambda: _ConvolutionDeprecated2DCudnnModule())
-def _Convolution2DCudnnModule_basic(module, tu: TestUtils):
+def _ConvolutionDeprecated2DCudnnModule_basic(module, tu: TestUtils):
     module.forward(torch.randn(3, 3, 10, 10), torch.randn(3, 3, 2, 2))
 
 class ConvolutionModule2DGroups(torch.nn.Module):
@@ -542,3 +542,243 @@ class ConvolutionModule2DGroups(torch.nn.Module):
 @register_test_case(module_factory=lambda: ConvolutionModule2DGroups())
 def ConvolutionModule2DGroups_basic(module, tu: TestUtils):
     module.forward(torch.randn(1, 32, 4, 4), torch.randn(32, 8, 3, 3))
+
+# ==============================================================================
+
+class ConvolutionModule2DTranspose(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, inputVec, weight):
+        return torch.ops.aten.convolution(inputVec,
+                                          weight,
+                                          bias=None,
+                                          stride=[1, 1],
+                                          padding=[1, 1],
+                                          dilation=[1, 1],
+                                          transposed=True,
+                                          output_padding=[0, 0],
+                                          groups=1)
+
+
+@register_test_case(module_factory=lambda: ConvolutionModule2DTranspose())
+def ConvolutionModule2DTranspose_basic(module, tu: TestUtils):
+    module.forward(torch.randn(3, 3, 4, 4), torch.randn(3, 3, 2, 2))
+
+class ConvolutionModule2DTransposeStrided(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, inputVec, weight):
+        return torch.ops.aten.convolution(inputVec,
+                                          weight,
+                                          bias=None,
+                                          stride=[2, 2],
+                                          padding=[1, 1],
+                                          dilation=[1, 1],
+                                          transposed=True,
+                                          output_padding=[0, 0],
+                                          groups=1)
+
+
+@register_test_case(module_factory=lambda: ConvolutionModule2DTransposeStrided())
+def ConvolutionModule2DTransposeStrided_basic(module, tu: TestUtils):
+    module.forward(torch.randn(5, 2, 5, 6), torch.randn(2, 5, 2, 2))
+
+class ConvolutionModule2DTransposeStridedStatic(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([5, 2, 5, 6], torch.float32, True),
+        ([2, 5, 2, 2], torch.float32, True),
+    ])
+    def forward(self, inputVec, weight):
+        return torch.ops.aten.convolution(inputVec,
+                                          weight,
+                                          bias=None,
+                                          stride=[2, 2],
+                                          padding=[1, 1],
+                                          dilation=[1, 1],
+                                          transposed=True,
+                                          output_padding=[0, 0],
+                                          groups=1)
+
+
+@register_test_case(module_factory=lambda: ConvolutionModule2DTransposeStridedStatic())
+def ConvolutionModule2DTransposeStridedStatic_basic(module, tu: TestUtils):
+    module.forward(torch.randn(5, 2, 5, 6), torch.randn(2, 5, 2, 2))
+
+
+class Conv_Transpose1dModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1], torch.float32, True),
+        ([-1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, inputVec, weight):
+        return torch.ops.aten.conv_transpose1d(inputVec,
+                                               weight,
+                                               bias=None,
+                                               stride=[2],
+                                               padding=[1],
+                                               dilation=[1],
+                                               output_padding=[0],
+                                               groups=1)
+
+
+@register_test_case(module_factory=lambda: Conv_Transpose1dModule())
+def Conv_Transpose1dModule_basic(module, tu: TestUtils):
+    module.forward(torch.randn(5, 2, 5), torch.randn(2, 5, 2))
+
+
+class Conv_Transpose2dModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, inputVec, weight):
+        return torch.ops.aten.conv_transpose2d(inputVec,
+                                               weight,
+                                               bias=None,
+                                               stride=[2, 2],
+                                               padding=[1, 1],
+                                               dilation=[1, 1],
+                                               output_padding=[0, 0],
+                                               groups=1)
+
+
+@register_test_case(module_factory=lambda: Conv_Transpose2dModule())
+def Conv_Transpose2dModule_basic(module, tu: TestUtils):
+    module.forward(torch.randn(5, 2, 5, 6), torch.randn(2, 5, 2, 2))
+
+class Conv_Transpose3dModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1, -1], torch.float32, True),
+        ([-1, -1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, inputVec, weight):
+        return torch.ops.aten.conv_transpose3d(inputVec,
+                                               weight,
+                                               bias=None,
+                                               stride=[2, 2, 2],
+                                               padding=[1, 1, 1],
+                                               dilation=[1, 1, 1],
+                                               output_padding=[0, 0, 0],
+                                               groups=1)
+
+
+@register_test_case(module_factory=lambda: Conv_Transpose3dModule())
+def Conv_Transpose3dModule_basic(module, tu: TestUtils):
+    module.forward(torch.randn(5, 2, 5, 6, 4), torch.randn(2, 5, 2, 2, 2))
+
+class UpSampleNearest2dSameSize(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, inputVec):
+        return torch._C._nn.upsample_nearest2d(inputVec,
+                                               output_size=[11, 11],
+                                               scale_factors=None)
+
+
+@register_test_case(module_factory=lambda: UpSampleNearest2dSameSize())
+def UpSampleNearest2dStaticSize_basic(module, tu: TestUtils):
+    module.forward(tu.rand(1, 1, 4, 4))
+
+
+class UpSampleNearest2dDiffSize(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([None, ([-1, -1, -1, -1], torch.float32, True)])
+    def forward(self, inputVec):
+        return torch._C._nn.upsample_nearest2d(inputVec,
+                                               output_size=[8, 11],
+                                               scale_factors=None)
+
+
+@register_test_case(module_factory=lambda: UpSampleNearest2dDiffSize())
+def UpSampleNearest2dDynamicSize_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 3, 2, 2))
+
+
+class UpSampleNearest2dDiffFactor(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([None, ([-1, -1, -1, -1], torch.float32, True)])
+    def forward(self, inputVec):
+        return torch._C._nn.upsample_nearest2d(inputVec,
+                                               output_size=None,
+                                               scale_factors=[2.3, 4.7])
+
+
+@register_test_case(module_factory=lambda: UpSampleNearest2dDiffFactor())
+def UpSampleNearest2dDynamicFactor_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 3, 2, 2))
+
+
+class UpSampleNearest2dSameFactor(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, inputVec):
+        return torch._C._nn.upsample_nearest2d(inputVec,
+                                               output_size=None,
+                                               scale_factors=[2.0, 2.0])
+
+
+@register_test_case(module_factory=lambda: UpSampleNearest2dSameFactor())
+def UpSampleNearest2dStaticFactor_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 3, 4, 4))

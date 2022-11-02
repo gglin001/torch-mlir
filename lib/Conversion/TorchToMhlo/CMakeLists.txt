@@ -13,9 +13,9 @@ add_mlir_conversion_library(TorchMLIRTorchToMhlo
 
   DEPENDS
   MhloDialect
-  ChloDialect
   MhloToLinalg
   MLIRMhloPassIncGen
+  LMHLOTransformsPassIncGen
   TorchMLIRConversionPassIncGen
 
   LINK_COMPONENTS
@@ -25,8 +25,9 @@ add_mlir_conversion_library(TorchMLIRTorchToMhlo
   MLIRIR
   MLIRPass
   MhloDialect
-  ChloDialect
   MhloToLinalg
+  MLIRBufferTransforms
+  StablehloOps
   TorchMLIRTorchDialect
 )
 

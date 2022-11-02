@@ -1,24 +1,30 @@
 blacklist:
 # List of unsupported ops in LTC autogen because of some error
 - _index_put_impl_  # Error: TODO not sure if there are other valid types to handle here
+- _index_put_impl # Error: TODO not sure if there are other valid types to handle here
 - empty_like  # Error: TODO add support for type BaseType(name=<BaseTy.MemoryFormat: 12>)
 - index.Tensor  # Error: TODO not sure if there are other valid types to handle here
 - index_put  # Error: TODO not sure if there are other valid types to handle here
 - index_put_  # Error: TODO not sure if there are other valid types to handle here
-- stack  # Error: TODO not sure if there are other valid types to handle here
 
 # Additional ops which autogen is supported for but don't compile yet
 - _convolution
 - detach
 - item
 - size
-- where
 - copy_
 
 # Disabled for consistency with TS backend
+- lift_fresh_copy
 - new_empty
 - rsub
 - slice.Tensor  # Disabled in favour of slice_copy.Tensor
+- zeros
+- ones
+- arange
+- arange.start
+- arange.start_step
+- fill.Scalar
 
 # Disabled in favour of functionalized alternatives
 - _reshape_alias
@@ -32,7 +38,10 @@ blacklist:
 - unsqueeze
 - view
 
-# whitelist:
+whitelist:
+# Enabled for consistency with TS backend
+- arange.start_out
+
 # List of ops to autogen even if not supported by Torch-MLIR explicitly
 #- split_copy.Tensor
 #- split_with_sizes_copy
@@ -66,9 +75,22 @@ supported:
 - slice_backward
 - diagonal_backward
 - _trilinear
-- linalg_inv_ex
 - linalg_pinv.atol_rtol_tensor
 - logsumexp.out
+
+# List of ops that will take in symints for the size instead of ints
+symint:
+- empty.memory_format
+- new_empty_strided
+- expand_copy
+- narrow_copy
+- slice_backward
+- slice_copy.Tensor
+- slice_scatter
+- view
+- view_copy
+- as_strided_copy
+- as_strided_scatter
 
 
 additional_ops:
@@ -83,6 +105,7 @@ non_native:
     properties:
       - ShapeCompute
       - TreatScalarsAsConstants
+  - func: expand(Tensor input, int[] size, bool is_scalar_expand) -> Tensor
   - func: cast(Tensor input, ScalarType dtype, ScalarType? stype) -> Tensor
     opkind: ltc_cast
     properties:

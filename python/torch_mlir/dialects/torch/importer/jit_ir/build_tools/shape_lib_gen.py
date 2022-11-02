@@ -295,8 +295,8 @@ def not_present_in_registry(f):
     """Decorator for shape functions not present in the shape registry.
 
     This can happen for "valsem" ops that we have in Torch-MLIR, such as
-    torch.valsem.aten.fill.Scalar, which are consistent with PyTorch conventions
-    (e.g. being the value-semantic correspondent of torch.aten.fill_.Scalar),
+    torch.valsem.aten.bernoulli.float, which are consistent with PyTorch conventions
+    (e.g. being the value-semantic correspondent of torch.aten.bernoulli_.float),
     but that for whatever reason are not present in PyTorch. Such ops are useful
     to keep certain passes within Torch-MLIR as consistent as possible.
     For such ops, in the shape library generator, we treat them as if they
@@ -394,7 +394,16 @@ def aten〇ceil(self: List[int]) -> List[int]:
 def aten〇log(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
+def aten〇mish(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
 def aten〇relu(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇relu6(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇round(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇_softmax(self: List[int], dim: int, half_to_float: bool) -> List[int]:
@@ -448,6 +457,9 @@ def aten〇contiguous(self: List[int], memory_format: int = 0) -> List[int]:
 def aten〇clone(self: List[int], memory_format: Optional[int] = None) -> List[int]:
     return upstream_shape_functions.unary(self)
 
+def aten〇lift_fresh_copy(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
 def aten〇_log_softmax_backward_data(grad_output: List[int], output: List[int], dim: int, input_dtype: int) -> List[int]:
     return upstream_shape_functions.unary(grad_output)
 
@@ -489,6 +501,9 @@ def aten〇floor_divide〇Scalar(self: List[int], other: float) -> List[int]:
 
 def aten〇pow〇Tensor_Scalar(self: List[int], exponent: float) -> List[int]:
     return upstream_shape_functions.unary(self)
+
+def aten〇pow〇Tensor_Tensor(self: List[int], exponent: List[int]) -> List[int]:
+    return upstream_shape_functions.broadcast(self, exponent)
 
 def aten〇rsub〇Scalar(self: List[int], other: float, alpha: float = 1) -> List[int]:
     return upstream_shape_functions.unary(self)
@@ -591,6 +606,9 @@ def aten〇numpy_T(self: List[int]) -> List[int]:
 def aten〇matmul(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.matmul(self, other)
 
+def aten〇mv(self: List[int], vec: List[int]) -> List[int]:
+    return upstream_shape_functions.mv(self, vec)
+
 def aten〇mm(self: List[int], mat2: List[int]) -> List[int]:
     return upstream_shape_functions.mm(self, mat2)
 
@@ -634,6 +652,9 @@ def aten〇repeat(self: List[int], repeats: List[int]) -> List[int]:
     for i in range(tensor_dim):
         out.append(self[i] * repeats[i + leading_rank])
     return out
+
+def aten〇roll(self: List[int], shifts: List[int], dims: List[int] = ()) -> List[int]:
+    return upstream_shape_functions.unary(self)
 
 def aten〇expand(self: List[int], size: List[int], implicit: bool = False) -> List[int]:
     return upstream_shape_functions.expand(self, size)
@@ -773,15 +794,15 @@ def aten〇masked_fill〇Tensor(self: List[int], mask: List[int], value: List[in
 def aten〇zero(self: List[int]) -> List[int]:
     return self
 
-@not_present_in_registry
+def aten〇fill〇Tensor(self: List[int], value: List[int]) -> List[int]:
+    return self
+
 def aten〇fill〇Scalar(self: List[int], value: float) -> List[int]:
     return self
 
-@not_present_in_registry
 def aten〇copy(self: List[int], src: List[int], non_blocking: bool = False) -> List[int]:
     return upstream_shape_functions.unary(self)
 
-@not_present_in_registry
 def aten〇uniform(self: List[int], from_: float = 0., to: float = 1., generator: Any = None) -> List[int]:
     return self
 
@@ -789,15 +810,16 @@ def aten〇uniform(self: List[int], from_: float = 0., to: float = 1., generator
 def aten〇bernoulli〇float(self: List[int], p: float = 0.5, generator: Any = None) -> List[int]:
     return self
 
-@not_present_in_registry
 def aten〇bernoulli〇Tensor(self: List[int], p: List[int], generator: Any = None) -> List[int]:
     return self
 
-@not_present_in_registry
-def aten〇index_put_impl(self: List[int], indices: List[Optional[List[int]]], values: List[int], accumulate: bool = False, unsafe: bool = False) -> List[int]:
+def aten〇_index_put_impl(self: List[int], indices: List[Optional[List[int]]], values: List[int], accumulate: bool = False, unsafe: bool = False) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇bernoulli(self: List[int], generator: Any = None) -> List[int]:
+    return self
+
+def aten〇cumsum(self: List[int], dim: int, dtype: Optional[int] = None) -> List[int]:
     return self
 
 def aten〇rand_like(self: List[int], dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None, memory_format: Optional[int] = None) -> List[int]:
@@ -848,8 +870,14 @@ def aten〇minimum(self: List[int], other: List[int]) -> List[int]:
 def aten〇maximum(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
 
+def aten〇bitwise_or〇Tensor(self: List[int], other: List[int]) -> List[int]:
+    return upstream_shape_functions.broadcast(self, other)
+
 def aten〇bitwise_and〇Tensor(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
+
+def aten〇bitwise_not(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
 
 def aten〇logical_or(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
@@ -935,8 +963,11 @@ def aten〇topk(self: List[int], k: int, dim: int = -1, largest: bool = True, so
 def aten〇conv2d(input: List[int], weight: List[int], bias: Optional[List[int]] = None, stride: List[int] = (1, 1), padding: List[int] = (0, 0), dilation: List[int] = (1, 1), groups: int = 1) -> List[int]:
     return upstream_shape_functions.conv2d(input, weight, bias, stride, padding, dilation, groups)
 
+def aten〇conv_transpose2d〇input(input: List[int], weight: List[int], bias: Optional[List[int]] = None, stride: List[int] = (1, 1), padding: List[int] = (0, 0), output_padding: List[int] = (0, 0), groups: int = 1, dilation: List[int] = (1, 1)) -> List[int]:
+    return upstream_shape_functions.conv_transpose2d_input(input, weight, bias, stride, padding, output_padding, groups, dilation)
+
 def aten〇convolution(input: List[int], weight: List[int], bias: Optional[List[int]], stride: List[int], padding: List[int], dilation: List[int], transposed: bool, output_padding: List[int], groups: int) -> List[int]:
-    return upstream_shape_functions.conv_output_size(input, weight, bias, stride, padding, dilation, groups)
+    return upstream_shape_functions.conv_forwards(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups)
 
 def aten〇_convolution(input: List[int], weight: List[int], bias: Optional[List[int]], stride: List[int], padding: List[int], dilation: List[int], transposed: bool, output_padding: List[int], groups: int, benchmark: bool, deterministic: bool, cudnn_enabled: bool, allow_tf32: bool) -> List[int]:
     return aten〇convolution(input, weight, bias, stride, padding, dilation, transposed, output_padding, groups)
@@ -1014,6 +1045,11 @@ def aten〇nll_loss_forward(self: List[int], target: List[int], weight: Optional
 def aten〇nll_loss_backward(grad_output: List[int], self: List[int], target: List[int], weight: Optional[List[int]], reduction: int, ignore_index: int, total_weight: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
+def aten〇mse_loss(self: List[int], target: List[int], reduction: int = 1) -> List[int]:
+    if reduction == 0:
+        return upstream_shape_functions.unary(self)
+    return []
+
 @check_shape_function([
     Invocation(TensorOfShape(2, 5, 2, 2, 3), [2, 2, 3], None, None, 1e-6), # Basic case.
 ])
@@ -1063,20 +1099,7 @@ def aten〇constant_pad_nd(self: List[int], pad: List[int], value: float = 0) ->
 def aten〇pad(self: List[int], pad: List[int], mode: str = "constant", value: Optional[float] = None) -> List[int]:
     return pad_shape_fn(self, pad)
 
-# See https://numpy.org/doc/stable/user/basics.indexing.html
-@check_shape_function([
-    Invocation(TensorOfShape(2), [LongTensorOfShape(4)]), # Basic case.
-    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(4)]), # More dimensions.
-    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(6, 4)]), # Multidimensional index tensor along a dimension.
-    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), None]), # Explicit None value.
-    Invocation(TensorOfShape(2, 3, 4, 5), [None, LongTensorOfShape(4), LongTensorOfShape(4)]), # Indexing tensors on consecutive dimensions.
-    Invocation(TensorOfShape(2, 3, 4, 5), [None, LongTensorOfShape(4), None, LongTensorOfShape(4)]), # Indexing tensors on non-consecutive dimensions.
-    Invocation(TensorOfShape(2, 3, 4, 5), [LongTensorOfShape(4, 2), None, LongTensorOfShape(2)]), # Indexing tensors on non-consecutive dimensions.
-    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4, 5, 6), LongTensorOfShape(1, 5, 1)]), # Broadcasting of index tensors.
-    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4)]), # Fewer index tensors than dimensions.
-    ErrorInvocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(4), LongTensorOfShape(4)]), # More index tensors than dimensions.
-])
-def aten〇index〇Tensor(self: List[int], indices: List[Optional[List[int]]]) -> List[int]:
+def index_tensor_like(self: List[int], indices: List[Optional[List[int]]]) -> List[int]:
     assert len(indices) <= len(self), "More indices than dimensions to index"
     broadcasted_shape: List[int] = []
     unused_dim_sizes: List[int] = []
@@ -1115,6 +1138,26 @@ def aten〇index〇Tensor(self: List[int], indices: List[Optional[List[int]]]) -
     for i in range(first_index_tensor_location, len(unused_dim_sizes)):
         result_shape.append(unused_dim_sizes[i])
     return result_shape
+
+# See https://numpy.org/doc/stable/user/basics.indexing.html
+@check_shape_function([
+    Invocation(TensorOfShape(2), [LongTensorOfShape(4)]), # Basic case.
+    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(4)]), # More dimensions.
+    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(6, 4)]), # Multidimensional index tensor along a dimension.
+    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4), None]), # Explicit None value.
+    Invocation(TensorOfShape(2, 3, 4, 5), [None, LongTensorOfShape(4), LongTensorOfShape(4)]), # Indexing tensors on consecutive dimensions.
+    Invocation(TensorOfShape(2, 3, 4, 5), [None, LongTensorOfShape(4), None, LongTensorOfShape(4)]), # Indexing tensors on non-consecutive dimensions.
+    Invocation(TensorOfShape(2, 3, 4, 5), [LongTensorOfShape(4, 2), None, LongTensorOfShape(2)]), # Indexing tensors on non-consecutive dimensions.
+    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4, 5, 6), LongTensorOfShape(1, 5, 1)]), # Broadcasting of index tensors.
+    Invocation(TensorOfShape(2, 3), [LongTensorOfShape(4)]), # Fewer index tensors than dimensions.
+    ErrorInvocation(TensorOfShape(2, 3), [LongTensorOfShape(4), LongTensorOfShape(4), LongTensorOfShape(4)]), # More index tensors than dimensions.
+])
+def aten〇index〇Tensor(self: List[int], indices: List[Optional[List[int]]]) -> List[int]:
+    return index_tensor_like(self, indices)
+
+def aten〇index〇Tensor_hacked_twin(self: List[int], indices: List[List[int]]) -> List[int]:
+    optional_indices: List[Optional[List[int]]] = [x for x in indices]
+    return index_tensor_like(self, optional_indices)
 
 def aten〇cat(tensors: List[List[int]], dim: int = 0) -> List[int]:
     return upstream_shape_functions.cat(tensors, dim)
@@ -1163,6 +1206,12 @@ def aten〇bincount(self: List[int], weights: Optional[List[int]] = None, minlen
 
 def aten〇linalg_vector_norm(self: List[int], ord: float = 2, dim: Optional[List[int]] = None, keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
     return upstream_shape_functions.sum_mean_dim(self, dim, keepdim, dtype)
+
+def aten〇frobenius_norm〇dim(self: List[int], dim: List[int], keepdim: bool = False) -> List[int]:
+    return upstream_shape_functions.sum_mean_dim(self, dim, keepdim, 0)
+
+def aten〇upsample_nearest2d〇vec(input: List[int], output_size: Optional[List[int]], scale_factors: Optional[List[float]]) -> List[int]:
+    return upstream_shape_functions.upsample_nearest2d(input, output_size, scale_factors)
 
 # ==============================================================================
 # Shape library generator main().
@@ -1223,6 +1272,17 @@ def main(args):
     # Put the `〇` back to a regular `.`.
     asm = asm.replace("\\E3\\80\\87", ".")
 
+    # We're about to put quotes around the string, so escape the `"` characters.
+    asm = asm.replace("\"", "\\\"")
+
+    # Instead of dumping one big chunk of text that is several thousand lines
+    # long (and which causes MSVC to error out), split it into multiple lines.
+    # See MSVC Compiler Error C2026
+    # [https://docs.microsoft.com/en-us/cpp/error-messages/compiler-errors-1/compiler-error-c2026?view=msvc-170]
+    # for details.
+    multiple_lines = asm.replace("\n", "\\n\"\n\"")
+    asm = f"\"{multiple_lines}\""
+
     # Write out the shape library .cpp file.
     shape_lib_cpp_file = os.path.join(
         args.torch_transforms_cpp_dir, "ShapeLibrary.cpp")
@@ -1248,19 +1308,16 @@ f"""//===-------------------------------------------------------------*- C++-*-=
 using namespace mlir;
 
 StringRef mlir::torch::Torch::getShapeLibrary() {{
-// TODO: Find a way to embed this string nicely.
-// It is currently too long, and will probably break MSVC builds if anyone
-// attempts that.
-// We want to preserve the legibility of the shape library as a checked in file,
-// since that is sometimes useful for debugging / diffing.
-// Probably the ideal outcome is to have the shape library be a .mlir file
-// that is checked in, and then we embed it as part of the build process.
+#ifndef _MSC_VER
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Woverlength-strings"
-  constexpr StringLiteral shapeLib(R"mlir(
-{asm})mlir");
+#endif
+  // clang-format off
+  return {asm};
+  // clang-format on
+#ifndef _MSC_VER
 #pragma clang diagnostic pop
-  return shapeLib;
+#endif
 }}""")
 
 def _create_argparse() -> argparse.ArgumentParser:

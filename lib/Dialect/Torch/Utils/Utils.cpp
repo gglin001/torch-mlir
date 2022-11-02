@@ -57,7 +57,21 @@ torch_upstream::ScalarType Torch::getScalarTypeForType(Type type) {
     return torch_upstream::ScalarType::BFloat16;
   if (type.isF16())
     return torch_upstream::ScalarType::Half;
+  if (type.isUnsignedInteger(8))
+    return torch_upstream::ScalarType::Byte;
+  if (type.isSignedInteger(8))
+    return torch_upstream::ScalarType::Char;
   llvm::report_fatal_error("unhandled type for getScalarTypeForType");
+}
+
+Type Torch::getTypeForTorchType(
+    MLIRContext *context, Type type,
+    mlir::IntegerType::SignednessSemantics signedness) {
+  if (type.isa<Torch::IntType>())
+    return IntegerType::get(context, 64, signedness);
+  if (type.isa<Torch::FloatType>())
+    return Float64Type::get(context);
+  llvm::report_fatal_error("unhandled type for getTypeForTorchType");
 }
 
 Type Torch::getTypeForScalarType(
@@ -78,6 +92,9 @@ Type Torch::getTypeForScalarType(
     return mlir::FloatType::getBF16(context);
   case torch_upstream::ScalarType::Half:
     return mlir::FloatType::getF16(context);
+  case torch_upstream::ScalarType::Byte:
+  case torch_upstream::ScalarType::Char:
+    return mlir::IntegerType::get(context, 8, signedness);
   default:
     return Type();
   }
@@ -131,4 +148,33 @@ int Torch::getTensorRank(Value tensor) {
     tensorRank = tensorShape.size();
   }
   return tensorRank;
+}
+
+bool Torch::isViewLikeOp(Operation *op) {
+  // AtenContiguousOp might return a view, so this is conservatively
+  // correct. We could potentially be more precise and identify the cases
+  // that it does not return a view and treat those as having value
+  // semantics.
+  return isa<AtenBroadcastToOp, AtenContiguousOp, AtenDetachOp, AtenExpandAsOp,
+             AtenExpandOp, AtenFlattenUsingIntsOp, AtenPermuteOp, AtenReshapeOp,
+             Aten_ReshapeAliasOp, AtenSelectIntOp, AtenSliceTensorOp,
+             AtenSqueezeDimOp, AtenSqueezeOp, AtenTOp, AtenToDtypeOp,
+             AtenTransposeIntOp, AtenUnsqueezeOp, AtenViewOp,
+             TensorStaticInfoCastOp, AtenToDtypeLayoutOp, AtenNumpyTOp,
+             AtenNarrowOp, AtenToDeviceOp>(op);
+}
+
+Value Torch::getConstantWithGivenDtypeAndValue(PatternRewriter &rewriter,
+                                               Location loc, float value,
+                                               Type dtype) {
+  // Creating constants satisfying backend contract.
+  if (dtype.isInteger(64) || dtype.isInteger(32) || dtype.isInteger(8) ||
+      dtype.isInteger(1))
+    return rewriter.create<ConstantIntOp>(
+        loc, rewriter.getI64IntegerAttr((int64_t)value));
+  if (dtype.isF64() || dtype.isF32() || dtype.isF16() || dtype.isBF16())
+    return rewriter.create<ConstantFloatOp>(loc,
+                                            rewriter.getF64FloatAttr(value));
+  llvm::report_fatal_error(
+      "unhandled type for getConstantWithGivenDtypeAndValue");
 }

@@ -9,7 +9,7 @@
 
 #include "torch-mlir/Conversion/Utils/Utils.h"
 
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -122,13 +122,15 @@ void checkDimEqualHelper(OpBuilder &b, Location loc, Value lhsDim,
 // initElem.
 Value createInitTensor(OpBuilder &b, Location loc, ValueRange sizes,
                        Type elemTy, Value initElem) {
-  Value initTensor = b.create<linalg::InitTensorOp>(loc, sizes, elemTy);
+  Value initTensor =
+      b.create<tensor::EmptyOp>(loc, getAsOpFoldResult(sizes), elemTy);
   return b.create<linalg::FillOp>(loc, initElem, initTensor).getResult(0);
 }
 
 Value createZeroInitTensor(OpBuilder &b, Location loc, ValueRange sizes,
                            Type elemTy) {
-  Value initTensor = b.create<linalg::InitTensorOp>(loc, sizes, elemTy);
+  Value initTensor =
+      b.create<tensor::EmptyOp>(loc, getAsOpFoldResult(sizes), elemTy);
   RankedTensorType type = initTensor.getType().cast<RankedTensorType>();
   Value c0 =
       b.create<arith::ConstantOp>(loc, b.getZeroAttr(type.getElementType()));
@@ -229,14 +231,12 @@ SmallVector<Value> getTypeConvertedValues(OpBuilder &b, Location loc,
 // Convert a scalar value to the target type. The scalar value can be an element
 // from a tensor or a scalar in the pytorch dialect. Both the scalar and dtype
 // should be converted builtin types.
-Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar,
-                           Type dtype) {
+Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar, Type dtype,
+                           llvm::Optional<Type> srcOriginalDtype) {
   Type scalarType = scalar.getType();
   if (scalarType == dtype)
     return scalar;
 
-  // TODO: For the byte(ui8) or char(i8) case, we need the unconverted dtype to
-  // be able to know if we need signed or unsigned conversion.
   auto isByteOrChar = [](Type type) {
     if (auto integerTy = type.dyn_cast<mlir::IntegerType>()) {
       return integerTy.getWidth() == 8;
@@ -244,11 +244,13 @@ Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar,
     return false;
   };
 
-  if (isByteOrChar(scalarType) || isByteOrChar(dtype)) {
-    // TODO: Handle to-boolean conversion(from-boolean conversion is handled).
-    mlir::emitError(loc)
-        << "unsupported byte, char or bool type for convertScalarToDtype "
-        << scalarType << "(scalar type) -> " << dtype << "(dtype)";
+  // We only support conversion from Byte or Char scalarType not to Byte or Char
+  // dtype.
+  if (isByteOrChar(dtype)) {
+    mlir::emitError(loc) << "unsupported: conversion to byte or char type for "
+                            "convertScalarToDtype "
+                         << scalarType << "(scalar type) -> " << dtype
+                         << "(dtype)";
     return nullptr;
   }
 
@@ -278,7 +280,8 @@ Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar,
       return b.create<arith::ExtFOp>(loc, dtype, scalar);
     }
     assert(scalarType.isa<mlir::IntegerType>());
-    if (scalarType.isSignlessInteger(1))
+    if (scalarType.isSignlessInteger(1) ||
+        (srcOriginalDtype.has_value() && srcOriginalDtype->isUnsignedInteger()))
       return b.create<arith::UIToFPOp>(loc, dtype, scalar);
     // It's safe to use SIToFPOp because ui8/si8 are the only ones where
     // unsigned handling is needed, and we checked for that case above.
@@ -292,7 +295,8 @@ Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar,
     auto scalarInteger = scalarType.cast<mlir::IntegerType>();
     if (scalarInteger.getWidth() > dtypeInteger.getWidth())
       return b.create<arith::TruncIOp>(loc, dtype, scalar);
-    if (scalarType.isSignlessInteger(1))
+    if (scalarType.isSignlessInteger(1) ||
+        (srcOriginalDtype.has_value() && srcOriginalDtype->isUnsignedInteger()))
       return b.create<arith::ExtUIOp>(loc, dtype, scalar);
     // Only scalarInteger width < dtypeInteger width can reach here.
     // It's safe to use ExtSIOp here because ui8/si8 are the only ones where

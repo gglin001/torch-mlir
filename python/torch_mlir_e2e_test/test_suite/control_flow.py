@@ -7,9 +7,9 @@ from numpy import int64
 import torch
 import random
 
-from torch_mlir_e2e_test.torchscript.framework import TestUtils
-from torch_mlir_e2e_test.torchscript.registry import register_test_case
-from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
+from torch_mlir_e2e_test.framework import TestUtils
+from torch_mlir_e2e_test.registry import register_test_case
+from torch_mlir_e2e_test.annotations import annotate_args, export
 
 # ==============================================================================
 
@@ -32,7 +32,7 @@ class TorchPrimLoopForLikeModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TorchPrimLoopForLikeModule())
 def TorchPrimLoopForLikeModule_basic(module, tu: TestUtils):
-    module.forward(torch.randint(0, 10, (6, 8)))
+    module.forward(tu.randint(6, 8, high=10))
 
 # ==============================================================================
 class TorchPrimLoopWhileLikeModule(torch.nn.Module):
@@ -54,4 +54,4 @@ class TorchPrimLoopWhileLikeModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TorchPrimLoopWhileLikeModule())
 def TorchPrimLoopWhileLikeModule_basic(module, tu: TestUtils):
-    module.forward(torch.randint(0, 10, (6, 8)))
+    module.forward(tu.randint(6, 8, high=10))

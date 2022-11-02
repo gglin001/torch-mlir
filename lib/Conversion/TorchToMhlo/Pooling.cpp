@@ -12,10 +12,10 @@
 #include "../PassDetail.h"
 #include "./MhloLegalizeUtils.h"
 #include "./PopulatePatterns.h"
-#include "mlir-hlo/Dialect/mhlo/IR/chlo_ops.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
@@ -28,6 +28,7 @@
 using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
+using namespace mlir::torch::torch_to_mhlo;
 
 static Value createInitialValueForAtenPoolingOp(Operation *op, Type elementTy,
                                                 PatternRewriter &rewriter) {
@@ -72,22 +73,9 @@ static Value createInitialValueForAtenPoolingOp(Operation *op, Type elementTy,
   return nullptr;
 }
 
-namespace {
-template <typename AtenOpT>
-class ConvertAtenPoolingOp : public OpConversionPattern<AtenOpT> {
-public:
-  using OpConversionPattern<AtenOpT>::OpConversionPattern;
-  using OpAdaptor = typename AtenOpT::Adaptor;
-  LogicalResult
-  matchAndRewrite(AtenOpT op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
-} // namespace
-
 // AtenMaxPool2dOp
-namespace {
 template <>
-LogicalResult ConvertAtenPoolingOp<AtenMaxPool2dOp>::matchAndRewrite(
+LogicalResult ConvertAtenOp<AtenMaxPool2dOp>::matchAndRewrite(
     AtenMaxPool2dOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
   Value input = adaptor.self();
@@ -166,7 +154,7 @@ LogicalResult ConvertAtenPoolingOp<AtenMaxPool2dOp>::matchAndRewrite(
       op->getLoc(), outTy, input, initVal, windowDimensions, windowStrides,
       baseDilations, windowDilations, pad);
 
-  Block &block = reduceWindowOp.body().emplaceBlock();
+  Block &block = reduceWindowOp.getBody().emplaceBlock();
 
   auto blockArgumentTy = RankedTensorType::get({}, inputElemTy);
   block.addArgument(blockArgumentTy, op->getLoc());
@@ -186,12 +174,10 @@ LogicalResult ConvertAtenPoolingOp<AtenMaxPool2dOp>::matchAndRewrite(
   rewriter.replaceOp(op, reduceWindowOp.getResults());
   return success();
 }
-} // namespace
 
 // AtenMaxPool2dWithIndicesOp
-namespace {
 template <>
-LogicalResult ConvertAtenPoolingOp<AtenMaxPool2dWithIndicesOp>::matchAndRewrite(
+LogicalResult ConvertAtenOp<AtenMaxPool2dWithIndicesOp>::matchAndRewrite(
     AtenMaxPool2dWithIndicesOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
   Value input = adaptor.self();
@@ -269,7 +255,9 @@ LogicalResult ConvertAtenPoolingOp<AtenMaxPool2dWithIndicesOp>::matchAndRewrite(
           rewriter.getI64Type()),
       mhloPadding);
 
-  auto inputShapeInfo = mhlo::getDimSizesOfTensor(rewriter, op, input);
+  const auto &options = getOptions();
+  auto inputShapeInfo =
+      mhlo::getDimSizesOfTensor(rewriter, op, input, options.dimSizeIndexBits);
   if (failed(inputShapeInfo)) {
     return rewriter.notifyMatchFailure(
         op, "failed to get dimension sizes of the input");
@@ -321,7 +309,7 @@ LogicalResult ConvertAtenPoolingOp<AtenMaxPool2dWithIndicesOp>::matchAndRewrite(
       mlir::ValueRange{input, indexTensor}, mlir::ValueRange{initVal, initIdx},
       windowDimensions, windowStrides, baseDilations, windowDilations, pad);
 
-  Block &block = reduceWindowOp.body().emplaceBlock();
+  Block &block = reduceWindowOp.getBody().emplaceBlock();
 
   // Add bb argument
   auto blockValArgumentType = RankedTensorType::get({}, inputElemTy);
@@ -379,12 +367,10 @@ LogicalResult ConvertAtenPoolingOp<AtenMaxPool2dWithIndicesOp>::matchAndRewrite(
   rewriter.replaceOp(op, reduceWindowOp.getResults());
   return success();
 }
-} // namespace
 
 // AtenAvgPool2dOp
-namespace {
 template <>
-LogicalResult ConvertAtenPoolingOp<AtenAvgPool2dOp>::matchAndRewrite(
+LogicalResult ConvertAtenOp<AtenAvgPool2dOp>::matchAndRewrite(
     AtenAvgPool2dOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
   Value input = adaptor.self();
@@ -468,7 +454,7 @@ LogicalResult ConvertAtenPoolingOp<AtenAvgPool2dOp>::matchAndRewrite(
       op->getLoc(), outTy, input, initVal, windowDimensions, windowStrides,
       baseDilations, windowDilations, pad);
 
-  Block &sumBlock = reduceWindowSum.body().emplaceBlock();
+  Block &sumBlock = reduceWindowSum.getBody().emplaceBlock();
 
   // Add bb argument
   auto blockArgumentType = RankedTensorType::get({}, inputElemTy);
@@ -502,7 +488,9 @@ LogicalResult ConvertAtenPoolingOp<AtenAvgPool2dOp>::matchAndRewrite(
   Value windowSizeConst =
       mhlo::getConstTensor<float>(rewriter, op, {1.0}, {}).value();
   windowSizeConst = mhlo::promoteType(rewriter, windowSizeConst, outTy);
-  auto inputShapeVec = *mhlo::getDimSizesOfTensor(rewriter, op, input);
+  const auto &options = getOptions();
+  auto inputShapeVec =
+      *mhlo::getDimSizesOfTensor(rewriter, op, input, options.dimSizeIndexBits);
   auto inputShapeTensor = rewriter.create<mlir::tensor::FromElementsOp>(
       op->getLoc(), inputShapeVec);
 
@@ -517,7 +505,7 @@ LogicalResult ConvertAtenPoolingOp<AtenAvgPool2dOp>::matchAndRewrite(
       windowSizeConst, zero, windowDimensions, windowStrides, baseDilations,
       windowDilations, pad);
 
-  Block &sizeBlock = reduceWindowSize.body().emplaceBlock();
+  Block &sizeBlock = reduceWindowSize.getBody().emplaceBlock();
 
   // Add bb argument
   blockArgumentType = RankedTensorType::get({}, inputElemTy);
@@ -540,17 +528,15 @@ LogicalResult ConvertAtenPoolingOp<AtenAvgPool2dOp>::matchAndRewrite(
   return success();
 }
 
-} // namespace
-
 void mlir::torch::torch_to_mhlo::populatePoolingOpPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
-    ConversionTarget &target) {
+    ConversionTarget &target, const TorchToMhloOptions &options) {
   MLIRContext *context = patterns.getContext();
   target.addIllegalOp<AtenMaxPool2dOp>();
-  patterns.add<ConvertAtenPoolingOp<AtenMaxPool2dOp>>(typeConverter, context);
+  patterns.add<ConvertAtenOp<AtenMaxPool2dOp>>(typeConverter, context, options);
   target.addIllegalOp<AtenAvgPool2dOp>();
-  patterns.add<ConvertAtenPoolingOp<AtenAvgPool2dOp>>(typeConverter, context);
+  patterns.add<ConvertAtenOp<AtenAvgPool2dOp>>(typeConverter, context, options);
   target.addIllegalOp<AtenMaxPool2dWithIndicesOp>();
-  patterns.add<ConvertAtenPoolingOp<AtenMaxPool2dWithIndicesOp>>(typeConverter,
-                                                                 context);
+  patterns.add<ConvertAtenOp<AtenMaxPool2dWithIndicesOp>>(typeConverter,
+                                                          context, options);
 }

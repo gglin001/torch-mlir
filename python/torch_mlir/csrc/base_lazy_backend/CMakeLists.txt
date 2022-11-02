@@ -71,6 +71,7 @@ add_library(torch_mlir_ltc_backend SHARED
   mlir_node.cpp
   ops/device_data.cpp
   ops/generic.cpp
+  utils/tensor_utils.cpp
 )
 target_compile_features(torch_mlir_ltc_backend PRIVATE cxx_std_17)
 
@@ -86,7 +87,7 @@ target_link_libraries(torch_mlir_ltc_backend
 
 message(STATUS "TORCH_CXXFLAGS=${TORCH_CXXFLAGS} -Wno-pedantic")
 set_target_properties(torch_mlir_ltc_backend PROPERTIES
-  LIBRARY_OUTPUT_DIRECTORY "${TORCH_MLIR_PYTHON_PACKAGES_DIR}/torch_mlir/torch_mlir/base_lazy_backend"
+  LIBRARY_OUTPUT_DIRECTORY "${TORCH_MLIR_PYTHON_PACKAGES_DIR}/torch_mlir/torch_mlir/_mlir_libs"
   OUTPUT_NAME lib_torch_mlir_ltc
   PREFIX ""
   SUFFIX ".so"

@@ -5,9 +5,9 @@
 
 import torch
 
-from torch_mlir_e2e_test.torchscript.framework import TestUtils
-from torch_mlir_e2e_test.torchscript.registry import register_test_case
-from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
+from torch_mlir_e2e_test.framework import TestUtils
+from torch_mlir_e2e_test.registry import register_test_case
+from torch_mlir_e2e_test.annotations import annotate_args, export
 
 # ==============================================================================
 
@@ -209,3 +209,20 @@ class MatmulBroadcastBatchDim(torch.nn.Module):
 def MatmulBroadcastBatchDim_basic(module, tu: TestUtils):
     module.forward(tu.rand(4, 5, 6, 7), tu.rand(5, 7, 6))
     
+# ==============================================================================
+
+class Mv(torch.nn.Module):
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.float32, True),
+        ([-1], torch.float32, True),
+    ])
+    def forward(self, m, v):
+        return torch.mv(m, v)
+
+
+@register_test_case(module_factory=lambda: Mv())
+def Mv_basic(module, tu: TestUtils):
+    module.forward(tu.rand(2, 2), tu.rand(2))

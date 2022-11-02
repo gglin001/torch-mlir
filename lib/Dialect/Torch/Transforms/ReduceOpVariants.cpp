@@ -55,9 +55,9 @@ static Type getContainerOrTensorTypeWithValueSemantics(Type type) {
 namespace {
 // Convert value semantic ops operating on mutable arrays to instead operate on
 // immutable tensors.
-class ConvertToImmutableTensors : public RewritePattern {
+class ConvertHasValueSemanticsOpsToValueTensors : public RewritePattern {
 public:
-  ConvertToImmutableTensors(MLIRContext *context)
+  ConvertHasValueSemanticsOpsToValueTensors(MLIRContext *context)
       : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
@@ -174,23 +174,8 @@ public:
                                 PatternRewriter &rewriter) const override {
     Location loc = op->getLoc();
     Operation *newOp;
-    if (isa<AtenUniform_Op>(op)) {
-      newOp = rewriter.create<ValsemVariantAtenUniformOp>(
-          loc, op->getResultTypes(), op->getOperands());
-    } else if (isa<AtenBernoulli_FloatOp>(op)) {
+    if (isa<AtenBernoulli_FloatOp>(op)) {
       newOp = rewriter.create<ValsemVariantAtenBernoulliFloatOp>(
-          loc, op->getResultTypes(), op->getOperands());
-    } else if (isa<AtenBernoulli_TensorOp>(op)) {
-      newOp = rewriter.create<ValsemVariantAtenBernoulliTensorOp>(
-          loc, op->getResultTypes(), op->getOperands());
-    } else if (isa<AtenFill_ScalarOp>(op)) {
-      newOp = rewriter.create<ValsemVariantAtenFillScalarOp>(
-          loc, op->getResultTypes(), op->getOperands());
-    } else if (isa<Aten_IndexPutImpl_Op>(op)) {
-      newOp = rewriter.create<ValsemVariantAtenIndexPutImplOp>(
-          loc, op->getResultTypes(), op->getOperands());
-    } else if (isa<AtenCopy_Op>(op)) {
-      newOp = rewriter.create<ValsemVariantAtenCopyOp>(
           loc, op->getResultTypes(), op->getOperands());
     } else {
       return failure();
@@ -260,19 +245,14 @@ class ReduceOpVariantsPass : public ReduceOpVariantsBase<ReduceOpVariantsPass> {
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
-    patterns.add<ConvertToImmutableTensors>(context);
+    patterns.add<ConvertHasValueSemanticsOpsToValueTensors>(context);
     patterns.add<ReduceTrailingUnderscoreInplaceVariant>(context);
     patterns.add(reduceNonValueTensorLiteralOpToValueTensorLiteralOp);
     patterns.add<ReduceNonValueSemanticOps>(context);
 
     ConversionTarget target(*context);
     target.addIllegalOp<NonValueTensorLiteralOp>();
-    target.addIllegalOp<AtenUniform_Op>();
     target.addIllegalOp<AtenBernoulli_FloatOp>();
-    target.addIllegalOp<AtenBernoulli_TensorOp>();
-    target.addIllegalOp<AtenFill_ScalarOp>();
-    target.addIllegalOp<Aten_IndexPutImpl_Op>();
-    target.addIllegalOp<AtenCopy_Op>();
     target.markUnknownOpDynamicallyLegal([](Operation *op) {
       if (op->hasTrait<Torch::OpTrait::HasValueSemantics>()) {
         auto hasValueSemantics = [](Type t) {

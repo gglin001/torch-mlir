@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 # Also available under a BSD-style license. See LICENSE.
 
-from typing import Sequence, Union, List
+from typing import Optional, Sequence, Union, List
 from enum import Enum
 
 import sys
@@ -31,25 +31,25 @@ class OutputType(Enum):
 
     # This output type consists of `torch` dialect ops that have been converted
     # maximally to value semantics, decomposed, and shapes have been inferred.
-    TORCH = 0
-
-    # This output type consists of `tosa` dialect ops. It can be thought of
-    # as taking the `TORCH` output type and lowering it to TOSA.
-    TOSA = 1
+    TORCH = "torch"
 
     # The output type contains a mix of `linalg`-on-tensors ops, `scf`, and
     # `arith` ops (and also `math` and `tm_tensor`). It can be thought of
     # as taking the `TORCH` output type and lowering it so that tensor
     # computations are done with `linalg`-on-tensors ops.
-    LINALG_ON_TENSORS = 2
+    LINALG_ON_TENSORS = "linalg-on-tensors"
+
+    # This output type consists of `tosa` dialect ops. It can be thought of
+    # as taking the `TORCH` output type and lowering it to TOSA.
+    TOSA = "tosa"
+
+    # This output type consists of `mhlo` dialect ops. It can be thought of
+    # as taking the `TORCH` output type and lowering it to MHLO.
+    MHLO = "mhlo"
 
     # Raw output of the JIT IR importer. This is not expected to be useful
     # for end-users, but can be convenient for development or reporting bugs.
-    RAW = 3
-
-    # This output type consists of `mhlo` dialect ops. It can be thought of 
-    # as taking the `TORCH` output type and lowering it to MHLO.
-    MHLO = 4
+    RAW = "raw"
 
     @staticmethod
     def get(spec: Union[str, "OutputType"]) -> "OutputType":
@@ -126,7 +126,7 @@ class TensorPlaceholder:
 # ops in the backend contract, and move these lists somewhere deeper in the
 # compiler where each backend can "own" its set of legal ops.
 BACKEND_LEGAL_OPS = {
-    OutputType.TOSA: ['torch.aten.flatten.using_ints',],
+    OutputType.TOSA: ['torch.aten.flatten.using_ints','torch.aten.native_layer_norm','torch.aten.linear'],
     OutputType.LINALG_ON_TENSORS: ['torch.aten.flatten.using_ints',],
     OutputType.MHLO: [],
 }
@@ -140,6 +140,7 @@ def compile(model: torch.nn.Module,
             output_type: Union[str, "OutputType"] = OutputType.TORCH,
             use_tracing: bool = False,
             ignore_traced_shapes = False,
+            backend_legal_ops: Optional[Sequence[str]] = None,
             verbose: bool = False):
     """Convert a PyTorch model to MLIR.
 
@@ -161,6 +162,9 @@ def compile(model: torch.nn.Module,
             `TensorPlaceholder`'s used as `example_args`. Also,
             strictly-speaking, this option covers dtypes too, but we just say
             "shapes" to be succinct.
+        backend_legal_ops: A list of ops that should be considered legal for
+            the backend. An op that is considered legal will not be decomposed.
+            This option is only valid with the `"torch"` output type.
         verbose: If true, print extra information about the conversion.
 
     Returns:
@@ -171,10 +175,30 @@ def compile(model: torch.nn.Module,
     if ignore_traced_shapes and not use_tracing:
         raise Exception("`ignore_traced_shapes` requires `use_tracing`")
 
+    # We only allow `backend_legal_ops` to be specified for the `"torch"`
+    # output type because the other output types actually invoke their
+    # respective backends (Linalg, TOSA, or MHLO), and those backends have
+    # very specific requirements about the ops which are legal.
+    # See `BACKEND_LEGAL_OPS` for more details.
+    if backend_legal_ops is not None:
+        if output_type != OutputType.TORCH:
+            raise Exception("`backend_legal_ops` is only valid with the "
+                            "`torch` output type")
+        backend_legal_ops = list(sorted(set(backend_legal_ops)))
+    else:
+        backend_legal_ops = BACKEND_LEGAL_OPS.get(output_type, [])
+
     # Special case -- many models have just one input, so canonicalize a single
     # tensor to a list of a single tensor to make the API more ergonomic.
     if isinstance(example_args, (torch.Tensor, TensorPlaceholder)):
         example_args = (example_args,)
+    
+    # If users passed in anything other than tensors or a list of tensors (e.g.
+    # a dictionary), we can't handle it.
+    if not isinstance(example_args, Sequence):
+        raise Exception(
+            "Only Tensors, TensorPlaceholders, or a sequences of Tensors and "
+            "TensorPlaceholders are supported as inputs.")
 
     # TODO: Don't hardcode "forward". See `torch.onnx.export` and
     # `torch.jit.trace_module` for API inspiration.
@@ -197,8 +221,12 @@ def compile(model: torch.nn.Module,
                 shape = [s if s != -1 else 7 for s in arg.shape]
                 example_args_for_trace.append(
                     torch.ones(*shape, dtype=arg.dtype))
-            else:
+            elif isinstance(arg, torch.Tensor):
                 example_args_for_trace.append(arg)
+            else:
+                raise Exception(
+                    "Only Tensors, TensorPlaceholders, or a sequences of "
+                    "Tensors and TensorPlaceholders are supported as inputs.")
         scripted = torch.jit.trace(model, tuple(example_args_for_trace))
     else:
         scripted = torch.jit.script(model)
@@ -242,7 +270,6 @@ PyTorch TorchScript module -> torch-mlir Object Graph IR import failed with:
     if output_type == OutputType.RAW:
         return mb.module
 
-    backend_legal_ops = BACKEND_LEGAL_OPS.get(output_type, [])
     option_string = "{backend-legal-ops=" + ",".join(backend_legal_ops) + "}"
     run_pipeline_with_repro_report(
         mb.module,

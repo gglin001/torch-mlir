@@ -31,6 +31,10 @@ Type getTypeForScalarType(
     MLIRContext *context, torch_upstream::ScalarType dtypeInt,
     mlir::IntegerType::SignednessSemantics signedness = IntegerType::Signed);
 
+Type getTypeForTorchType(
+    MLIRContext *context, Type type,
+    mlir::IntegerType::SignednessSemantics signedness = IntegerType::Signed);
+
 Type getTorchTypeForScalarType(MLIRContext *context,
                                torch_upstream::ScalarType dtypeInt);
 
@@ -45,6 +49,11 @@ bool isBuiltInType(Type type);
 // Helper funtion to get rank of `Base tensor type`.
 // -1 is returned if the tensorRank can't be determined.
 int getTensorRank(Value tensor);
+
+bool isViewLikeOp(Operation *op);
+
+Value getConstantWithGivenDtypeAndValue(PatternRewriter &rewriter, Location loc,
+                                        float value, Type dtype);
 
 } // namespace Torch
 } // namespace torch

@@ -12,7 +12,7 @@
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
 #include "Utils.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -22,6 +22,7 @@
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
+#include <algorithm>
 
 using namespace mlir;
 using namespace mlir::torch;
@@ -69,8 +70,8 @@ public:
 
     Type newResultType = getTypeConverter()->convertType(op.getType());
     Type elementType = newResultType.cast<TensorType>().getElementType();
-    Value initTensor = rewriter.create<linalg::InitTensorOp>(
-        loc, ValueRange{lhsDim0, rhsDim1}, elementType);
+    Value initTensor = rewriter.create<tensor::EmptyOp>(
+        loc, ArrayRef<OpFoldResult>{lhsDim0, rhsDim1}, elementType);
     Value c0 = rewriter.create<arith::ConstantOp>(
         loc, FloatAttr::get(elementType, 0.0));
     Value zeroFill =
@@ -79,7 +80,7 @@ public:
                        .create<linalg::MatmulOp>(loc, zeroFill.getType(),
                                                  ValueRange{lhs, rhs}, zeroFill)
                        .getResult(0);
-    // When constructed with just dynamic sizes, InitTensorOp will have a result
+    // When constructed with just dynamic sizes, EmptyOp will have a result
     // type which has all `?`'s for dimensions, which might not be the result
     // type of `op`. The constraints on later linalg ops means that the result
     // of the MatmulOp will have this type too. So cast it to the desired type
@@ -295,6 +296,21 @@ public:
             op, "unable to perform broadcast operation");
       }
 
+      if (maxRank == 3) {
+        Value zeroTensor = createZeroInitTensor(
+            rewriter, loc,
+            ValueRange{broadcastedBatchShape[0], lhsDim0, rhsDim1},
+            elementType);
+        Value matmul =
+            rewriter
+                .create<linalg::BatchMatmulOp>(
+                    loc, zeroTensor.getType(),
+                    ValueRange{broadcastedLhs, broadcastedRhs}, zeroTensor)
+                .getResult(0);
+        rewriter.replaceOpWithNewOp<tensor::CastOp>(op, newResultType, matmul);
+        return success();
+      }
+
       // Check if the result of the matrix multiplication has more than one
       // dynamic batch dimensions.
       ArrayRef<int64_t> batchDimsInt = resultType.getShape().drop_back(2);
@@ -330,7 +346,7 @@ public:
         SmallVector<OpFoldResult> updatedCollapseResultShape =
             getAsOpFoldResult(collapsedResultShape);
 
-        Value initTensor = rewriter.create<linalg::InitTensorOp>(
+        Value initTensor = rewriter.create<tensor::EmptyOp>(
             loc, updatedCollapseResultShape, elementType);
         Value c0 = rewriter.create<arith::ConstantOp>(
             loc, rewriter.getZeroAttr(elementType));
@@ -454,176 +470,6 @@ public:
 } // namespace
 
 namespace {
-// See comments at in convertMmOp and the heading for this section for general
-// considerations. This function needs to be auto-generated.
-class ConvertAtenLinearOp : public OpConversionPattern<AtenLinearOp> {
-public:
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(AtenLinearOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    MLIRContext *context = op->getContext();
-    Location loc = op->getLoc();
-    Value input = adaptor.input();
-    Value weight = adaptor.weight();
-    Value bias = adaptor.bias();
-    if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
-      return failure();
-    auto inputType = input.getType().cast<RankedTensorType>();
-    auto weightType = weight.getType().cast<RankedTensorType>();
-
-    if (inputType.getRank() != 2 && inputType.getRank() != 3) {
-      return rewriter.notifyMatchFailure(
-          op, "expected  input to be rank 2 or rank 3");
-    }
-
-    if (!bias.getType().isa<Torch::NoneType>()) {
-      auto biasType = bias.getType().cast<RankedTensorType>();
-      // Only handle the case of rank 2 `weight` for now.
-      // TODO: Insert the appropriate reshape to collapse any leading dimensions.
-      if (weightType.getRank() != 2 || biasType.getRank() != 1) {
-        return rewriter.notifyMatchFailure(
-            op, "expected weight to be rank 2 and bias to be rank 1");
-      }
-      // TODO: Handle type promotion. What are ATen's promotion rules?
-      if (inputType.getElementType() != weightType.getElementType() ||
-          inputType.getElementType() != biasType.getElementType()) {
-        return rewriter.notifyMatchFailure(op, "unimplemented: type promotion");
-      }
-      // TODO: We can handle a static size 1 here at some complexity cost, but the
-      // dynamic case is not representable in linalg. We don't handle either for
-      // now. Biases are generally statically shaped for most models (since for
-      // inference they are constants, and for training they don't change shape
-      // typically), so this is not too constraining.
-      auto biasSize = bias.getType().cast<RankedTensorType>().getShape()[0];
-      if (biasSize == 1 || biasSize == ShapedType::kDynamicSize)
-        return rewriter.notifyMatchFailure(
-            op, "unimplemented: size-1 broadcasting for aten::LinearOp");
-    }
-
-
-    Value batchDim = nullptr;
-    int restDim = 0;
-    if (inputType.getRank() == 3) {
-      batchDim = getDimOp(rewriter, loc, input, 0);
-      restDim = 1;
-    }
-
-    Value inputDim0 = getDimOp(rewriter, loc, input, restDim + 0);
-    Value inputDim1 = getDimOp(rewriter, loc, input, restDim + 1);
-    Value weightDim0 = getDimOp(rewriter, loc, weight, 0);
-    Value weightDim1 = getDimOp(rewriter, loc, weight, 1);
-    Value contractingDimEqual = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::eq, inputDim1, weightDim1);
-    rewriter.create<cf::AssertOp>(
-        loc, contractingDimEqual,
-        rewriter.getStringAttr(
-            "mismatching contracting dimension for aten.linear"));
-
-    if (!bias.getType().isa<Torch::NoneType>()) {
-      Value biasDim0 = getDimOp(rewriter, loc, bias, 0);
-      // Here we take advantage of ruling out the size-1 case above.
-      // In the static-size-1 case, we will not emit this check at all.
-      Value biasSizeCorrect = rewriter.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::eq, weightDim0, biasDim0);
-      rewriter.create<cf::AssertOp>(
-          loc, biasSizeCorrect,
-          rewriter.getStringAttr("mismatching bias size for aten.linear"));
-    }
-
-    Value initTensor;
-    SmallVector<AffineMap> broadcastIndexingMaps;
-    Value transposedWeightInitTensor;
-    if (inputType.getRank() > 2) {
-      initTensor = rewriter.create<linalg::InitTensorOp>(
-          loc, ValueRange{batchDim, inputDim0, weightDim0},
-          inputType.getElementType());
-      transposedWeightInitTensor = rewriter.create<linalg::InitTensorOp>(
-          loc, ValueRange{batchDim, weightDim1, weightDim0},
-          weightType.getElementType());
-      broadcastIndexingMaps = {
-          AffineMap::get(
-              /*dimCount=*/inputType.getRank(), /*symbolCount=*/0,
-              {rewriter.getAffineDimExpr(1 + restDim)}, context),
-          rewriter.getMultiDimIdentityMap(inputType.getRank())};
-    } else {
-      initTensor = rewriter.create<linalg::InitTensorOp>(
-          loc, ValueRange{inputDim0, weightDim0},
-          inputType.getElementType());
-      transposedWeightInitTensor = rewriter.create<linalg::InitTensorOp>(
-          loc, ValueRange{weightDim1, weightDim0}, weightType.getElementType());
-      broadcastIndexingMaps = {
-          AffineMap::get(
-              /*dimCount=*/inputType.getRank(), /*symbolCount=*/0,
-              {rewriter.getAffineDimExpr(1)}, context),
-          rewriter.getMultiDimIdentityMap(inputType.getRank())};
-    }
-
-    SmallVector<StringRef> iteratorTypes(inputType.getRank(), "parallel");
-    Value broadcasted;
-    if (!bias.getType().isa<Torch::NoneType>()) {
-      broadcasted =
-          rewriter
-              .create<linalg::GenericOp>(
-                  loc, initTensor.getType(), bias, initTensor,
-                  /*indexingMaps=*/broadcastIndexingMaps,
-                  /*iteratorTypes=*/iteratorTypes,
-                  [](OpBuilder &b, Location loc, ValueRange args) {
-                    b.create<linalg::YieldOp>(loc, args[0]);
-                  })
-              .getResult(0);
-    } else {
-      Type elementType =
-          input.getType().cast<RankedTensorType>().getElementType();
-      Value c0float = rewriter.create<arith::ConstantOp>(
-          loc, FloatAttr::get(elementType, 0.0));
-      broadcasted = rewriter.create<linalg::FillOp>(loc, c0float, initTensor)
-                           .getResult(0);
-    }
-    // We need a matmul with dimension ordering (N, K) * (M, K), so transpose
-    // the weights to fit into linalg::MatmulOp which is (N, K) * (K, M).
-    // TODO: This whole aten.linear lowering should eventually be generated from
-    // a single linalg ODS generator statement. Both the bias and matmul part.
-    SmallVector<AffineMap> transposeIndexingMaps = {
-        AffineMap::get(
-            /*dimCount=*/inputType.getRank(), /*symbolCount=*/0,
-            {rewriter.getAffineDimExpr(1 + restDim),
-             rewriter.getAffineDimExpr(0 + restDim)},
-            context),
-        rewriter.getMultiDimIdentityMap(inputType.getRank())};
-    Value transposedWeights =
-        rewriter
-            .create<linalg::GenericOp>(
-                loc, transposedWeightInitTensor.getType(), weight,
-                transposedWeightInitTensor,
-                /*indexingMaps=*/transposeIndexingMaps,
-                /*iteratorTypes=*/iteratorTypes,
-                [](OpBuilder &b, Location loc, ValueRange args) {
-                  b.create<linalg::YieldOp>(loc, args[0]);
-                })
-            .getResult(0);
-    Value matmul;
-    if (batchDim)
-      matmul = rewriter
-                   .create<linalg::BatchMatmulOp>(
-                       loc, broadcasted.getType(),
-                       ValueRange{input, transposedWeights}, broadcasted)
-                   .getResult(0);
-    else
-      matmul = rewriter
-                   .create<linalg::MatmulOp>(
-                       loc, broadcasted.getType(),
-                       ValueRange{input, transposedWeights}, broadcasted)
-                   .getResult(0);
-
-    Type newResultType = getTypeConverter()->convertType(op.getType());
-    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, newResultType, matmul);
-    return success();
-  }
-};
-} // namespace
-
-namespace {
 class ConvertAtenConvolutionOp : public OpConversionPattern<AtenConvolutionOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -635,12 +481,18 @@ public:
     Value input = adaptor.input();   /* in form of N*C*H*W */
     Value weight = adaptor.weight(); /* in form of F*C*H*W */
 
+    bool transposed = true;
+    if (!matchPattern(op.transposed(), m_TorchConstantBool(&transposed)))
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: only constant transposed supported");
+
     Type elementType =
         input.getType().cast<RankedTensorType>().getElementType();
     if (!elementType.isa<mlir::FloatType>())
       return op.emitError("unimplemented: non-floating point type");
     size_t inRank = input.getType().cast<RankedTensorType>().getRank();
-    if (inRank != 4)
+    size_t numSpacialDims = inRank - 2;
+    if (numSpacialDims != 2)
       return rewriter.notifyMatchFailure(
           op, "unimplemented: only 2D convolution currently supported");
 
@@ -674,13 +526,6 @@ public:
     for (size_t i = 2; i < inRank; i++)
       weightDims.push_back(getDimOp(rewriter, loc, weight, i));
 
-    // Guard unused values (transposed)
-    bool transposed = true;
-    if (!matchPattern(op.transposed(), m_TorchConstantBool(&transposed)) ||
-        transposed)
-      return rewriter.notifyMatchFailure(
-          op, "unimplemented: only non-transposed convolution supported");
-
     // Checks for valid group size
     int64_t groupSize;
     if (!matchPattern(op.groups(), m_TorchConstantInt(&groupSize)))
@@ -701,22 +546,122 @@ public:
              "invalid: groups must divide input channel size evenly.");
     validate(weightBatch,
              "invalid: groups must divide weight batch size evenly.");
-
-    SmallVector<Value> paddingIntValues =
-        getAsConstantIntValues(rewriter, loc, paddingInts);
     SmallVector<Value> dilationIntValues =
         getAsConstantIntValues(rewriter, loc, dilationInts);
+    SmallVector<Value> paddingIntValues =
+        getAsConstantIntValues(rewriter, loc, paddingInts);
     SmallVector<Value> strideIntValues =
         getAsConstantIntValues(rewriter, loc, strideInts);
 
+    // Pad the input tensor according to padding.
     SmallVector<Value> outDims{inBatch, weightBatch};
-    for (size_t i = 0; i < inRank - 2; i++)
-      outDims.push_back(torch_to_linalg::getOutputDimForConvOps(
-          rewriter, loc, inDims[i], paddingIntValues[i], dilationIntValues[i],
-          castIndexToInt(weightDims[i]), strideIntValues[i]));
+    Value paddedInput;
+    if (transposed) {
+      Value c0 =
+          rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
+      Value c1 =
+          rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(1));
+      Value c2 =
+          rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(2));
 
-    Value initTensor =
-        rewriter.create<linalg::InitTensorOp>(loc, outDims, elementType);
+      // Transpose and flip weight
+      SmallVector<Value> weightInitDims = getTensorSizes(rewriter, loc, weight);
+      std::iter_swap(weightInitDims.begin(), weightInitDims.begin() + 1);
+      outDims[1] = weightInitDims[0];
+      Value weightInitTensor =
+          createZeroInitTensor(rewriter, loc, weightInitDims, elementType);
+      SmallVector<StringRef> iteratorTypes(inRank,
+                                           getParallelIteratorTypeName());
+      SmallVector<AffineMap> indexingMaps{
+          AffineMap::getMultiDimIdentityMap(inRank, context)};
+      weight = rewriter
+                   .create<linalg::GenericOp>(
+                       loc, weightInitTensor.getType(), ValueRange{},
+                       weightInitTensor, indexingMaps, iteratorTypes,
+                       [&](OpBuilder &b, Location loc, ValueRange args) {
+                         SmallVector<Value> indices;
+                         for (size_t i = 0; i < inRank; i++)
+                           indices.push_back(b.create<linalg::IndexOp>(loc, i));
+                         std::iter_swap(indices.begin(), indices.begin() + 1);
+                         // Flip only the spatial dimensions (from 2 to inRank)
+                         for (size_t flipDim = 2; flipDim < inRank; flipDim++) {
+                           indices[flipDim] = b.create<arith::SubIOp>(
+                               loc,
+                               b.create<arith::SubIOp>(
+                                   loc, weightInitDims[flipDim], c1),
+                               indices[flipDim]);
+                         }
+                         Value res =
+                             b.create<tensor::ExtractOp>(loc, weight, indices)
+                                 .getResult();
+                         b.create<linalg::YieldOp>(loc, res);
+                       })
+                   .getResult(0);
+
+      // Calculate padded input size, allocate tensor
+      SmallVector<Value> outerSizes{inBatch, inChannels};
+      SmallVector<Value> innerSizes{inBatch, inChannels};
+      SmallVector<Value> offsets{c0, c0};
+      for (size_t i = 0; i < numSpacialDims; i++) {
+        Value innerSize = rewriter.create<arith::SubIOp>(loc, inDims[i], c1);
+        innerSize = rewriter.create<arith::MulIOp>(
+            loc, innerSize, castIntToIndex(rewriter, loc, strideIntValues[i]));
+        innerSize = rewriter.create<arith::AddIOp>(loc, innerSize, c1);
+
+        Value offset = rewriter.create<arith::SubIOp>(loc, weightDims[i], c1);
+        offset = rewriter.create<arith::MulIOp>(
+            loc, offset, castIntToIndex(rewriter, loc, dilationIntValues[i]));
+        offset = rewriter.create<arith::SubIOp>(
+            loc, offset, castIntToIndex(rewriter, loc, paddingIntValues[i]));
+
+        Value outerSize = rewriter.create<arith::MulIOp>(loc, offset, c2);
+        outerSize = rewriter.create<arith::AddIOp>(loc, outerSize, innerSize);
+
+        outerSizes.push_back(outerSize);
+        offsets.push_back(offset);
+      }
+
+      // Allocate padded input tensor
+      Value initTensor =
+          createZeroInitTensor(rewriter, loc, outerSizes, elementType);
+
+      // Insert input into allocated tensor
+      SmallVector<Value> strideIndexValues{c1, c1};
+      for (auto stride : strideIntValues)
+        strideIndexValues.push_back(castIntToIndex(rewriter, loc, stride));
+      SmallVector<Value> insertSizes = getTensorSizes(rewriter, loc, input);
+
+      paddedInput = rewriter.create<tensor::InsertSliceOp>(
+          loc, torch_to_linalg::removeSizeInformation(rewriter, loc, input),
+          initTensor, offsets, insertSizes, strideIndexValues);
+
+      // Calculate output dims
+      for (size_t i = 0; i < numSpacialDims; i++)
+        outDims.push_back(torch_to_linalg::getOutputDimForConvTransposeOps(
+            rewriter, loc, inDims[i], paddingIntValues[i], dilationIntValues[i],
+            castIndexToInt(weightDims[i]), strideIntValues[i]));
+
+      // Set stride to 1
+      strideInts.clear();
+      strideInts.append(numSpacialDims, 1);
+
+    } else {
+      // Pad input
+      SmallVector<int64_t, 4> paddingIncludingNC = {0, 0};
+      paddingIncludingNC.insert(paddingIncludingNC.end(), paddingInts.begin(),
+                                paddingInts.end());
+      paddedInput = torch_to_linalg::getZeroPaddedTensor(op, rewriter, input,
+                                                         paddingIncludingNC);
+
+      // Calculate output dims
+      for (size_t i = 0; i < numSpacialDims; i++)
+        outDims.push_back(torch_to_linalg::getOutputDimForConvOps(
+            rewriter, loc, inDims[i], paddingIntValues[i], dilationIntValues[i],
+            castIndexToInt(weightDims[i]), strideIntValues[i]));
+    }
+
+    Value initTensor = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(outDims), elementType);
 
     Value bias = adaptor.bias();
     Value outputTensor;
@@ -768,14 +713,6 @@ public:
     inputSliceSizes.append(inDims);
     SmallVector<Value> weightSliceSizes{weightStride, weightChannels};
     weightSliceSizes.append(weightDims);
-
-    // Pad the input tensor according to padding.
-    SmallVector<int64_t, 4> paddingIncludingNC = {0, 0};
-    paddingIncludingNC.append(paddingInts);
-
-    // Pad inputSlice
-    Value paddedInput = torch_to_linalg::getZeroPaddedTensor(
-        op, rewriter, input, paddingIncludingNC);
 
     Value conv;
     if (groupSize == 1) {
@@ -904,8 +841,6 @@ void mlir::torch::torch_to_linalg::populateLinearPatternsAndLegality(
   patterns.add<ConvertAtenMatmulOp>(typeConverter, context);
   target.addIllegalOp<AtenBmmOp>();
   patterns.add<ConvertAtenBmmOp>(typeConverter, context);
-  target.addIllegalOp<AtenLinearOp>();
-  patterns.add<ConvertAtenLinearOp>(typeConverter, context);
   target.addIllegalOp<AtenConvolutionOp>();
   patterns.add<ConvertAtenConvolutionOp>(typeConverter, context);
 }

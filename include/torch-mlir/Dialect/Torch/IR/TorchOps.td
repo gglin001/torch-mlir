@@ -251,7 +251,8 @@ def Torch_GlobalSlotOp : Torch_Op<"global_slot", [
 
 def Torch_GlobalSlotModuleInitializerOp : Torch_Op<"global_slot.module_initializer", [
     IsolatedFromAbove,
-    SingleBlockImplicitTerminator<"::mlir::torch::Torch::InitializeGlobalSlotsOp">
+    SingleBlockImplicitTerminator<"::mlir::torch::Torch::InitializeGlobalSlotsOp">,
+    AllowedInModuleInitializer,
   ]> {
   let summary = "Module initializer for all `torch.global_slot` ops";
   let description = [{
@@ -277,7 +278,9 @@ def Torch_GlobalSlotModuleInitializerOp : Torch_Op<"global_slot.module_initializ
 
 def Torch_InitializeGlobalSlotsOp : Torch_Op<"initialize.global_slots", [
     Terminator,
-    HasParent<"::mlir::torch::Torch::GlobalSlotModuleInitializerOp">]> {
+    HasParent<"::mlir::torch::Torch::GlobalSlotModuleInitializerOp">,
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "Terminator for torch.global_slot.module_initializer region";
   let description = [{
     Atomically updates the value of all the global slots named in `slotSymNames`
@@ -372,11 +375,12 @@ def Torch_PrimListUnpackOp: Torch_Op<"prim.ListUnpack", [
 }
 
 def Torch_PrimTupleConstructOp: Torch_Op<"prim.TupleConstruct", [
-    NoSideEffect,
+    Pure,
     TypesMatchWith<"contained types correspond to operand types",
     "elements", "result", "Torch::TupleType::get($_ctxt, llvm::to_vector<6>($_self))",
-    "isValidSubtype">
-    ]> {
+    "isValidSubtype">,
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "TorchScript prim::TupleConstruct op";
   let description = [{
     Note: This op does not allow trivial type refinement, because the
@@ -396,9 +400,10 @@ def Torch_PrimTupleConstructOp: Torch_Op<"prim.TupleConstruct", [
 }
 
 def Torch_PrimListConstructOp: Torch_Op<"prim.ListConstruct", [
-    NoSideEffect,
+    Pure,
     AllowsTypeRefinement,
-    ]> {
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "TorchScript prim::ListConstruct op";
 
   let arguments = (ins
@@ -418,7 +423,8 @@ def Torch_PrimListConstructOp: Torch_Op<"prim.ListConstruct", [
 def Torch_PrimDictConstructOp: Torch_Op<"prim.DictConstruct", [
     AllowsTypeRefinement,
     SameVariadicOperandSize,
-    ]> {
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "TorchScript prim::DictConstruct op";
 
   let arguments = (ins
@@ -443,7 +449,7 @@ def Torch_PrimDictConstructOp: Torch_Op<"prim.DictConstruct", [
 }
 
 def Torch_PrimCreateObjectOp: Torch_Op<"prim.CreateObject", [
-    NoSideEffect,
+    Pure,
     AllowsTypeRefinement,
     ]> {
   let summary = "TorchScript prim::CreateObject op";
@@ -581,7 +587,7 @@ def Torch_PrimIfOp : Torch_Op<"prim.If", [
 def Torch_PrimIfYieldOp : Torch_Op<"prim.If.yield", [
     Terminator,
     ReturnLike,
-    NoSideEffect,
+    Pure,
     HasParent<"::mlir::torch::Torch::PrimIfOp">]> {
   let summary = "yield-like terminator for torch.prim.If";
   let description = [{
@@ -650,9 +656,12 @@ def Torch_PrimExitOp : Torch_Op<"prim.Exit", []> {
 // Ops corresponding to prim::Constant
 //===----------------------------------------------------------------------===//
 
-def Torch_ConstantNoneOp : Torch_Op<"constant.none",
-    [ConstantLike, NoSideEffect,
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
+def Torch_ConstantNoneOp : Torch_Op<"constant.none", [
+    ConstantLike,
+    Pure,
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "Get the singleton None value.";
   let description = [{
     Not to be confused with the `mlir::NoneType`. Be careful to use
@@ -664,9 +673,12 @@ def Torch_ConstantNoneOp : Torch_Op<"constant.none",
   let hasFolder = 1;
 }
 
-def Torch_ConstantStrOp : Torch_Op<"constant.str",
-    [ConstantLike, NoSideEffect,
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
+def Torch_ConstantStrOp : Torch_Op<"constant.str", [
+    ConstantLike,
+    Pure,
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "Materialize a constant str value.";
   let description = [{
     Note: Strings in Python (and TorchScript) are immutable.
@@ -682,7 +694,7 @@ def Torch_ConstantStrOp : Torch_Op<"constant.str",
 }
 
 def Torch_ConstantDeviceOp : Torch_Op<"constant.device",
-    [NoSideEffect,
+    [Pure,
     DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
   let summary = "Materialize a constant Device value.";
   let description = [{
@@ -697,9 +709,12 @@ def Torch_ConstantDeviceOp : Torch_Op<"constant.device",
   let assemblyFormat = "$value attr-dict";
 }
 
-def Torch_ConstantIntOp : Torch_Op<"constant.int",
-    [ConstantLike, NoSideEffect,
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
+def Torch_ConstantIntOp : Torch_Op<"constant.int", [
+    ConstantLike,
+    Pure,
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "Materialize a constant `int` value.";
   let description = [{
     Note: TorchScript represents integers as 64-bit signed values, unlike
@@ -716,9 +731,12 @@ def Torch_ConstantIntOp : Torch_Op<"constant.int",
   let hasFolder = 1;
 }
 
-def Torch_ConstantFloatOp : Torch_Op<"constant.float",
-    [ConstantLike, NoSideEffect,
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
+def Torch_ConstantFloatOp : Torch_Op<"constant.float", [
+    ConstantLike,
+    Pure,
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "Materialize a constant `float` value.";
   let description = [{
     Note: TorchScript represents `float` as 64-bit floating point values.
@@ -735,9 +753,34 @@ def Torch_ConstantFloatOp : Torch_Op<"constant.float",
   let hasFolder = 1;
 }
 
-def Torch_ConstantBoolOp : Torch_Op<"constant.bool",
-    [ConstantLike, NoSideEffect,
-    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
+def Torch_ConstantNumberOp : Torch_Op<"constant.number",
+    [ConstantLike, Pure]> {
+  let summary = "Materialize a constant `number` value.";
+  let description = [{
+    This op is used as a workaround to the fact that the constant 
+    materialization in MLIR must materialize a constant with a single op. 
+    To materialize ops with a static `!torch.number` type, we must use this op, 
+    even though we statically know if it is an integer or a float.
+
+    Note: This op unconditionally canonicalizes to 
+    `torch.constant.{float,int}` + `torch.derefine`
+  }];
+  let arguments = (ins
+    AnyAttrOf<[F64Attr, I64Attr]>:$value
+  );
+  let results = (outs
+    Torch_NumberType:$result
+  );
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+}
+
+def Torch_ConstantBoolOp : Torch_Op<"constant.bool", [
+    ConstantLike,
+    Pure,
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    AllowedInModuleInitializer,
+  ]> {
   let summary = "Materialize a constant `bool` value.";
   let description = [{
   }];
@@ -756,7 +799,7 @@ def Torch_ConstantBoolOp : Torch_Op<"constant.bool",
 //===----------------------------------------------------------------------===//
 
 def Torch_DerefineOp : Torch_Op<"derefine", [
-    NoSideEffect,
+    Pure,
     DeclareOpInterfaceMethods<CastOpInterface>,
   ]> {
   let summary = "De-refine a type";
@@ -808,7 +851,8 @@ def Torch_OperatorOp : Torch_Op<"operator", [
 }
 
 def Torch_LinearParamsCreateOp : Torch_Op<"linear_params.create", [
-    AllowsTypeRefinement
+    AllowsTypeRefinement,
+    AllowedInModuleInitializer,
   ]> {
   let summary = "Create a `!torch.LinearParams`";
   let arguments = (ins
@@ -823,7 +867,8 @@ def Torch_LinearParamsCreateOp : Torch_Op<"linear_params.create", [
 }
 
 def Torch_PerTensorAffineCreateOp : Torch_Op<"per_tensor_affine.create", [
-    AllowsTypeRefinement
+    AllowsTypeRefinement,
+    AllowedInModuleInitializer,
   ]> {
   let summary = "Create a per-tensor-affine quantized tensor";
   let description = [{
@@ -854,6 +899,7 @@ def Torch_PerTensorAffineCreateOp : Torch_Op<"per_tensor_affine.create", [
 def Torch_NonValueTensorLiteralOp : Torch_Op<"tensor.literal", [
     DeclareOpInterfaceMethods<InferTypeOpInterface, ["isCompatibleReturnTypes"]>,
     AllowsTypeRefinement,
+    AllowedInModuleInitializer,
   ]> {
   let summary = "Create a value of !torch.tensor type from a literal";
   let description = [{
@@ -886,7 +932,7 @@ def Torch_NonValueTensorLiteralOp : Torch_Op<"tensor.literal", [
 def Torch_ValueTensorLiteralOp : Torch_Op<"vtensor.literal", [
     DeclareOpInterfaceMethods<InferTypeOpInterface>,
     ConstantLike,
-    NoSideEffect,
+    Pure,
   ]> {
   let summary = "Create a value of !torch.vtensor type from a literal";
   let description = [{
@@ -915,7 +961,7 @@ def Torch_ValueTensorLiteralOp : Torch_Op<"vtensor.literal", [
 def Torch_TensorStaticInfoCastOp : Torch_Op<"tensor_static_info_cast", [
     DeclareOpInterfaceMethods<CastOpInterface>,
     AllowsTypeRefinement,
-    NoSideEffect]> {
+    Pure]> {
   let summary = "Adds/removes static information from a tensor type.";
   let description = [{
     This op does not imply any runtime code. Semantically it is an identity
@@ -1036,26 +1082,6 @@ def Torch_OverwriteTensorContentsOp : Torch_Op<"overwrite.tensor.contents", [
   }];
 }
 
-// The corresponding without underscore variant for `torch.aten.uniform_`
-// doesn't exist in the pytorch ops registry. Add it here.
-def Torch_ValsemVariantAtenUniformOp: Torch_Op<"valsem.aten.uniform", [
-    AllowsTypeRefinement,
-    HasValueSemantics,
-    ReadOnly
-  ]> {
-  let summary = "`uniform op : (Tensor, float, float, Generator?) -> (Tensor)`";
-  let arguments = (ins
-    AnyTorchTensorType:$self,
-    Torch_FloatType:$from,
-    Torch_FloatType:$to,
-    AnyTorchOptionalGeneratorType:$generator
-  );
-  let results = (outs
-    AnyTorchTensorType:$result
-  );
-  let assemblyFormat = "$self `,` $from `,` $to `,` $generator attr-dict `:` type($self) `,` type($from) `,` type($to) `,` type($generator) `->` type($result)";
-}
-
 // The corresponding without underscore variant for `torch.aten.bernoulli_.float`
 // doesn't exist in the pytorch ops registry. Add it here.
 def Torch_ValsemVariantAtenBernoulliFloatOp: Torch_Op<"valsem.aten.bernoulli.float", [
@@ -1073,83 +1099,6 @@ def Torch_ValsemVariantAtenBernoulliFloatOp: Torch_Op<"valsem.aten.bernoulli.flo
     AnyTorchTensorType:$result
   );
   let assemblyFormat = "$self `,` $p `,` $generator attr-dict `:` type($self) `,` type($p) `,` type($generator) `->` type($result)";
-}
-
-// The corresponding without underscore variant for `torch.aten.bernoulli_.Tensor`
-// doesn't exist in the pytorch ops registry. Add it here.
-def Torch_ValsemVariantAtenBernoulliTensorOp: Torch_Op<"valsem.aten.bernoulli.Tensor", [
-    AllowsTypeRefinement,
-    HasValueSemantics,
-    ReadOnly
-  ]> {
-  let summary = "Generated op for `aten::bernoulli_.Tensor : (Tensor, Tensor, Generator?) -> (Tensor)`";
-  let arguments = (ins
-    AnyTorchTensorType:$self,
-    AnyTorchTensorType:$p,
-    AnyTorchOptionalGeneratorType:$generator
-  );
-  let results = (outs
-    AnyTorchTensorType:$result
-  );
-  let assemblyFormat = "$self `,` $p `,` $generator attr-dict `:` qualified(type($self)) `,` qualified(type($p)) `,` qualified(type($generator)) `->` qualified(type($result))";
-}
-
-// The corresponding without underscore variant for `torch.aten.fill_.Scalar`
-// doesn't exist in the pytorch ops registry. Add it here.
-def Torch_ValsemVariantAtenFillScalarOp: Torch_Op<"valsem.aten.fill.Scalar", [
-    AllowsTypeRefinement,
-    HasValueSemantics,
-    ReadOnly
-  ]> {
-  let summary = "`fill.Scalar op : (Tensor, Scalar) -> (Tensor)`";
-  let arguments = (ins
-    AnyTorchTensorType:$self,
-    AnyTorchScalarType:$value
-  );
-  let results = (outs
-    AnyTorchTensorType:$result
-  );
-  let assemblyFormat = "$self `,` $value attr-dict `:` qualified(type($self)) `,` qualified(type($value)) `->` qualified(type($result))";
-}
-
-// The corresponding without underscore variant for `torch.aten._index_put_impl_`
-// doesn't exist in the pytorch ops registry. Add it here.
-def Torch_ValsemVariantAtenIndexPutImplOp: Torch_Op<"valsem.aten.index_put_impl", [
-    AllowsTypeRefinement,
-    HasValueSemantics,
-    ReadOnly
-  ]> {
-  let summary = "`index_put_impl op : (Tensor, Tensor?[], Tensor, bool, bool) -> (Tensor)`";
-  let arguments = (ins
-    AnyTorchTensorType:$self,
-    AnyTorchListOfOptionalTensorType:$indices,
-    AnyTorchTensorType:$values,
-    Torch_BoolType:$accumulate,
-    Torch_BoolType:$unsafe
-  );
-  let results = (outs
-    AnyTorchTensorType:$result
-  );
-  let assemblyFormat = "$self `,` $indices `,` $values `,` $accumulate `,` $unsafe attr-dict `:` qualified(type($self)) `,` qualified(type($indices)) `,` qualified(type($values)) `,` qualified(type($accumulate)) `,` qualified(type($unsafe)) `->` qualified(type($result))";
-}
-
-// The corresponding without underscore variant for `torch.aten.copy_`
-// doesn't exist in the pytorch ops registry. Add it here.
-def Torch_ValsemVariantAtenCopyOp : Torch_Op<"valsem.aten.copy", [
-    AllowsTypeRefinement,
-    HasValueSemantics,
-    ReadOnly
-  ]> {
-  let summary = "copy op : (Tensor, Tensor, bool) -> (Tensor)`";
-  let arguments = (ins
-    AnyTorchTensorType:$self,
-    AnyTorchTensorType:$src,
-    Torch_BoolType:$non_blocking
-  );
-  let results = (outs
-    AnyTorchTensorType:$result
-  );
-  let assemblyFormat = "$self `,` $src `,` $non_blocking attr-dict `:` qualified(type($self)) `,` qualified(type($src)) `,` qualified(type($non_blocking)) `->` qualified(type($result))";
 }
 
 // To handle runtime assertions, torchscript provides us `torch._assert` operation. 

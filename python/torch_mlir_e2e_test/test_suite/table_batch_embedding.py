@@ -5,9 +5,9 @@
 
 import torch
 
-from torch_mlir_e2e_test.torchscript.framework import TestUtils
-from torch_mlir_e2e_test.torchscript.registry import register_test_case
-from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
+from torch_mlir_e2e_test.framework import TestUtils
+from torch_mlir_e2e_test.registry import register_test_case
+from torch_mlir_e2e_test.annotations import annotate_args, export
 
 # ==============================================================================
 
@@ -54,8 +54,7 @@ class TableBatchEmbeddingModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TableBatchEmbeddingModule())
 def TableBatchEmbeddingModule_basic(module, tu: TestUtils):
-    indices = torch.randint(0, NUM_EMBEDDINGS, (NUM_TABLES * BATCH_SIZE * BAG_SIZE,))
+    indices = tu.randint(NUM_TABLES * BATCH_SIZE * BAG_SIZE, high=NUM_EMBEDDINGS)
     offsets = torch.cumsum(
         torch.tensor([0] + [BAG_SIZE for _ in range(BATCH_SIZE - 1)], dtype=torch.int64), 0)
     module.forward(indices, offsets)
-

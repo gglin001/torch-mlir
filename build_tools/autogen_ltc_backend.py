@@ -24,8 +24,9 @@ from torchgen.gen import get_grouped_native_functions, parse_native_yaml
 from torchgen.gen_backend_stubs import parse_backend_yaml
 
 TORCH_DIR = Path(importlib.util.find_spec("torch").origin).resolve().parent.parent
-if TORCH_DIR.joinpath("torch", "include").is_dir():
-    TORCH_DIR = TORCH_DIR.joinpath("torch", "include")
+TORCH_INCLUDE_DIR = TORCH_DIR.joinpath("torch", "include")
+if not TORCH_INCLUDE_DIR.is_dir():
+    TORCH_INCLUDE_DIR = TORCH_DIR
 TORCHGEN_DIR = Path(torchgen.__path__[0]).resolve()
 TORCH_MLIR_DIR = Path(__file__).resolve().parent.parent
 
@@ -74,6 +75,9 @@ class GenMlirLazyIr(torchgen.dest.GenLazyIR):
             for a in emplace_kwarg_values + emplace_kwarg_scalars
         )
 
+        # Only create this variable if it's used to avoid Wunused-variable
+        operand_idx_counter = "size_t i = 0;" if "i++" in (emplace_arguments_str + emplace_kwarguments) else ""
+
         return reindent(
             f"""
             {signature} {{
@@ -82,7 +86,7 @@ class GenMlirLazyIr(torchgen.dest.GenLazyIR):
                 std::vector<torch::jit::NamedValue> kwarguments;
                 arguments.reserve({len(emplace_arguments)});
                 kwarguments.reserve({len(emplace_kwarg_values + emplace_kwarg_scalars)});
-                size_t i = 0;
+                {operand_idx_counter}
                 {emplace_arguments_str}
                 {emplace_kwarguments}
                 torch::lazy::TorchMlirOpVector {schema.aten_name}_out = torch::lazy::LowerTorchMlirBuiltin(function, op().op, shapes(), arguments, kwarguments);
@@ -164,6 +168,9 @@ class GenTorchMlirLTC:
         ts_native_yaml = None
         if ts_native_yaml_path.exists():
             ts_native_yaml = yaml.load(ts_native_yaml_path.read_text(), yaml.CLoader)
+        else:
+            logging.warning(f"Could not find `ts_native_functions.yaml` at {ts_native_yaml_path}")
+
 
         parsed_yaml = parse_native_yaml(native_yaml_path, tags_yaml_path)
         self.native_functions = parsed_yaml.native_functions
@@ -257,6 +264,9 @@ class GenTorchMlirLTC:
         # Additional ops to support that are not supported by Torch-MLIR explicitly
         supported |= set(config.get("additional_ops", []))
 
+        # List of ops that will take in symints for its size
+        symint = set(config.get("symint", []))
+
         self.ops = sorted(ops)
 
         with self.source_yaml.open("w") as f:
@@ -265,6 +275,7 @@ class GenTorchMlirLTC:
                 "cpp_namespace": "torch::lazy",
                 "full_codegen": self.ops,
                 "supported": sorted(supported),
+                "symint": sorted(symint),
                 "non_native": non_native,
             }
             yaml.dump(source_yaml, f, default_flow_style=False)
@@ -287,6 +298,7 @@ class GenTorchMlirLTC:
 
         if ts_native_yaml:
             ts_full_codegen = set(ts_native_yaml["full_codegen"])
+            ts_supported = set(ts_native_yaml["supported"])
             mlir_full_codegen = set(self.ops)
 
             if ts_full_codegen - mlir_full_codegen:
@@ -302,6 +314,22 @@ class GenTorchMlirLTC:
                     "Full Codegen ops supported by the Torch-MLIR backend "
                     "but not by the TorchScript backend:\n    {}".format(
                         "\n    ".join(sorted(mlir_full_codegen - ts_full_codegen))
+                    )
+                )
+
+            if ts_supported - supported:
+                logging.debug(
+                    "Ops supported by the TorchScript backend "
+                    "but not by the Torch-MLIR backend:\n    {}".format(
+                        "\n    ".join(sorted(ts_supported - supported))
+                    )
+                )
+
+            if supported - ts_supported:
+                logging.debug(
+                    "Ops supported by the Torch-MLIR backend "
+                    "but not by the TorchScript backend:\n    {}".format(
+                        "\n    ".join(sorted(supported - ts_supported))
                     )
                 )
 
@@ -364,7 +392,7 @@ class GenTorchMlirLTC:
         )
         assert len(shape_inference_decls) > 0
         upstream_shape_inference_decls = extract_signatures(
-            TORCH_DIR.joinpath(
+            TORCH_INCLUDE_DIR.joinpath(
                 "torch", "csrc", "lazy", "core", "shape_inference.h"
             ).read_text()
         )

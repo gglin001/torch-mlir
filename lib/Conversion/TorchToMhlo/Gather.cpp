@@ -10,9 +10,10 @@
 #include "torch-mlir/Conversion/TorchToMhlo/TorchToMhlo.h"
 
 #include "../PassDetail.h"
+#include "./MhloLegalizeUtils.h"
 #include "./PopulatePatterns.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
@@ -23,18 +24,14 @@
 using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
-
-#ifdef TORCH_MLIR_ENABLE_MHLO_TRUNC_DIMSIZE_TO_I32
-static constexpr size_t kMhloDimSizeBits = 32;
-#else
-static constexpr size_t kMhloDimSizeBits = 64;
-#endif
+using namespace mlir::torch::torch_to_mhlo;
 
 namespace {
 Value gatherTensorAlongSingleAxis(PatternRewriter &rewriter, Operation *op,
-                                  Value input, Value indices, int64_t axis) {
+                                  Value input, Value indices, int64_t axis,
+                                  size_t dimSizeIndexBits) {
   auto loc = op->getLoc();
-  Type intType = rewriter.getIntegerType(kMhloDimSizeBits);
+  Type intType = rewriter.getIntegerType(dimSizeIndexBits);
   Value one = rewriter.create<arith::ConstantOp>(
       loc, rewriter.getIntegerAttr(intType, 1));
 
@@ -98,16 +95,7 @@ Value gatherTensorAlongSingleAxis(PatternRewriter &rewriter, Operation *op,
                                      sliceSizesTensor, dimsAttr)
       .getResult();
 }
-
-template <typename AtenOpT>
-class ConvertAtenOp : public OpConversionPattern<AtenOpT> {
-public:
-  using OpConversionPattern<AtenOpT>::OpConversionPattern;
-  using OpAdaptor = typename AtenOpT::Adaptor;
-  LogicalResult
-  matchAndRewrite(AtenOpT op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
+} // namespace
 
 // Ref: https://pytorch.org/docs/stable/generated/torch.nn.functional.embedding.html
 // padding_idx (int, optional)
@@ -149,8 +137,8 @@ LogicalResult ConvertAtenOp<AtenEmbeddingOp>::matchAndRewrite(
     return rewriter.notifyMatchFailure(
         op, "sparse gradients is currently not supported");
 
-  Value output =
-      gatherTensorAlongSingleAxis(rewriter, op, weight, adaptor.indices(), 0);
+  Value output = gatherTensorAlongSingleAxis(
+      rewriter, op, weight, adaptor.indices(), 0, options.dimSizeIndexBits);
   rewriter.replaceOpWithNewOp<mhlo::ConvertOp>(
       op, getTypeConverter()->convertType(op.getType()), output);
 
@@ -170,25 +158,114 @@ LogicalResult ConvertAtenOp<AtenIndexSelectOp>::matchAndRewrite(
     return rewriter.notifyMatchFailure(
         op, "only constant dim is currently supported");
 
-  Value output =
-      gatherTensorAlongSingleAxis(rewriter, op, self, adaptor.index(), dim);
+  Value output = gatherTensorAlongSingleAxis(
+      rewriter, op, self, adaptor.index(), dim, options.dimSizeIndexBits);
 
   rewriter.replaceOpWithNewOp<mhlo::ConvertOp>(
       op, getTypeConverter()->convertType(op.getType()), output);
 
   return success();
 }
-} // namespace
+
+// AtenGatherOp
+template <>
+LogicalResult ConvertAtenOp<AtenGatherOp>::matchAndRewrite(
+    AtenGatherOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  Location loc = op->getLoc();
+  Value input = adaptor.self();
+  Value index = adaptor.index();
+  auto inputType = input.getType().cast<RankedTensorType>();
+  auto indexType = index.getType().cast<RankedTensorType>();
+  auto indexElemType = indexType.getElementType();
+
+  if (indexType.getRank() != inputType.getRank()) {
+    return op.emitError("`index` and `input` param should have the same rank");
+  }
+  int64_t dim;
+  if (!matchPattern(op.dim(), m_TorchConstantInt(&dim))) {
+    return rewriter.notifyMatchFailure(
+        op, "only constant int `dim` param supported");
+  }
+  dim = toPositiveDim(dim, inputType.getRank());
+  if (!isValidDim(dim, inputType.getRank())) {
+    return rewriter.notifyMatchFailure(op, "invalid `dim` param detected");
+  }
+
+  bool sparseGrad = false;
+  if (!matchPattern(op.sparse_grad(), m_TorchConstantBool(&sparseGrad))) {
+    return rewriter.notifyMatchFailure(
+        op, "only constant boolean `sparse_grad` param supported");
+  }
+
+  auto options = getOptions();
+  auto indexShapeInfo =
+      mhlo::getDimSizesOfTensor(rewriter, op, index, options.dimSizeIndexBits);
+  if (failed(indexShapeInfo)) {
+    return rewriter.notifyMatchFailure(
+        op, "failed to get dim sizes of `index` param");
+  }
+  auto intType = rewriter.getIntegerType(options.dimSizeIndexBits);
+  auto one = rewriter.create<arith::ConstantOp>(
+      loc, rewriter.getIntegerAttr(intType, 1));
+  auto toConcatIndexShapeValueVec = *indexShapeInfo;
+  toConcatIndexShapeValueVec.push_back(one);
+  auto toConcatIndexShape =
+      rewriter.create<tensor::FromElementsOp>(loc, toConcatIndexShapeValueVec);
+
+  auto indexShape = indexType.getShape();
+  SmallVector<int64_t> toConcatIndexShapeVec(indexShape.begin(),
+                                             indexShape.end());
+  toConcatIndexShapeVec.push_back(1);
+  RankedTensorType toConcatIndexType =
+      RankedTensorType::get(toConcatIndexShapeVec, indexElemType);
+
+  SmallVector<Value> toConcat;
+  for (int64_t i = 0; i < inputType.getRank(); ++i) {
+    if (i == dim) {
+      toConcat.push_back(rewriter.create<mhlo::DynamicReshapeOp>(
+          loc, toConcatIndexType, index, toConcatIndexShape));
+    } else {
+      toConcat.push_back(rewriter.create<mhlo::DynamicIotaOp>(
+          loc, toConcatIndexType, toConcatIndexShape,
+          rewriter.getI64IntegerAttr(i)));
+    }
+  }
+  auto gatherIndicies = rewriter.create<mhlo::ConcatenateOp>(
+      loc, toConcat, static_cast<uint64_t>(inputType.getRank()));
+  SmallVector<int64_t> sliceSizes(inputType.getRank(), 1);
+
+  int64_t indexVecDim = inputType.getRank();
+  SmallVector<int64_t> collapsedDims;
+  SmallVector<int64_t> startIndexMap;
+  for (int64_t i = 0; i < inputType.getRank(); ++i) {
+    collapsedDims.push_back(i);
+    startIndexMap.push_back(i);
+  }
+
+  auto dimsAttr = mhlo::GatherDimensionNumbersAttr::get(
+      rewriter.getContext(),
+      /*offsetDims=*/{},
+      /*collapsedSliceDims=*/collapsedDims,
+      /*startIndexMap=*/startIndexMap,
+      /*indexVecDim=*/indexVecDim);
+
+  rewriter.replaceOpWithNewOp<mhlo::GatherOp>(
+      op, input, gatherIndicies, dimsAttr,
+      rewriter.getI64TensorAttr(sliceSizes));
+  return success();
+}
 
 void mlir::torch::torch_to_mhlo::populateGatherOpPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
-    ConversionTarget &target) {
+    ConversionTarget &target, const TorchToMhloOptions &options) {
   MLIRContext *context = patterns.getContext();
 
 #define INSERT_ATENOP_PATTERN(AtenOp)                                          \
   target.addIllegalOp<AtenOp>();                                               \
-  patterns.add<ConvertAtenOp<AtenOp>>(typeConverter, context);
+  patterns.add<ConvertAtenOp<AtenOp>>(typeConverter, context, options)
   INSERT_ATENOP_PATTERN(AtenEmbeddingOp);
   INSERT_ATENOP_PATTERN(AtenIndexSelectOp);
+  INSERT_ATENOP_PATTERN(AtenGatherOp);
 #undef INSERT_ATENOP_PATTERN
 }

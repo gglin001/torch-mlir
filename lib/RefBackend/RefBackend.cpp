@@ -15,7 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PassDetail.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
@@ -61,8 +61,13 @@ static bool isArgMemRefTypeValid(Type type) {
         return true;
       if (integerTy.isSignlessInteger(32))
         return true;
+      if (integerTy.isSignlessInteger(8))
+        return true;
+      if (integerTy.isSignedInteger(8))
+        return true;
       if (integerTy.isSignlessInteger(1))
         return true;
+
     }
   }
   return false;
@@ -139,7 +144,7 @@ static LogicalResult mungeFunction(
     auto type = arg.getType();
     if (!isArgMemRefTypeValid(type))
       return emitError(arg.getLoc(),
-                       "argument must be a memref of f32, f64, i32, i64, i1");
+                       "argument must be a memref of f32, f64, i32, i64, i8, i1");
     auto cast = b.create<memref::CastOp>(arg.getLoc(), type, arg);
     arg.replaceAllUsesExcept(cast, cast);
     arg.setType(getAbiTypeForMemRef(type));
@@ -299,7 +304,7 @@ class ExpandOpsForLLVM : public ExpandOpsForLLVMBase<ExpandOpsForLLVM> {
     ConversionTarget target(*context);
     target.addLegalDialect<func::FuncDialect>();
     target.addLegalDialect<math::MathDialect>();
-    target.addLegalDialect<arith::ArithmeticDialect>();
+    target.addLegalDialect<arith::ArithDialect>();
     target.addIllegalOp<math::TanhOp>();
     target.addIllegalOp<math::ErfOp>();
     if (failed(applyPartialConversion(func, target, std::move(patterns)))) {
@@ -347,7 +352,7 @@ class MemrefCopyOpToLinalg : public OpRewritePattern<memref::CopyOp> {
   LogicalResult matchAndRewrite(memref::CopyOp copyOp,
                                 PatternRewriter &rewriter) const override {
     Operation *linalgCopy = createLinalgCopyOp(
-        rewriter, copyOp.getLoc(), copyOp.source(), copyOp.target());
+        rewriter, copyOp.getLoc(), copyOp.getSource(), copyOp.getTarget());
     rewriter.replaceOp(copyOp, linalgCopy->getResults());
     return success();
   }

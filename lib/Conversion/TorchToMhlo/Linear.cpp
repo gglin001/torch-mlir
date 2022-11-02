@@ -12,10 +12,10 @@
 #include "../PassDetail.h"
 #include "./MhloLegalizeUtils.h"
 #include "./PopulatePatterns.h"
-#include "mlir-hlo/Dialect/mhlo/IR/chlo_ops.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
@@ -25,6 +25,7 @@
 using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
+using namespace mlir::torch::torch_to_mhlo;
 
 namespace {
 Value getBroadcastTensor(PatternRewriter &rewriter, Operation *op, Value tensor,
@@ -70,8 +71,66 @@ Value getPermutedTensor(PatternRewriter &rewriter, Operation *op, Value input,
   return result.getResult();
 }
 
+RankedTensorType castContractingDim(PatternRewriter &rewriter, Operation *op,
+                                    Value &lhs, Value &rhs,
+                                    int64_t lhsResultDim, int64_t rhsResultDim,
+                                    int64_t lhsContractingDim,
+                                    int64_t rhsContractingDim) {
+  auto lhsTy = lhs.getType().dyn_cast<RankedTensorType>();
+  auto rhsTy = rhs.getType().dyn_cast<RankedTensorType>();
+
+  auto oldLhsShape = lhsTy.getShape();
+  auto oldRhsShape = rhsTy.getShape();
+  SmallVector<int64_t> lhsShape;
+  SmallVector<int64_t> rhsShape;
+  lhsShape.append(oldLhsShape.begin(), oldLhsShape.end());
+  rhsShape.append(oldRhsShape.begin(), oldRhsShape.end());
+  auto lhsContractingDimSize = lhsShape[lhsContractingDim];
+  auto rhsContractingDimSize = rhsShape[rhsContractingDim];
+  if (lhsContractingDimSize != rhsContractingDimSize) {
+    if (lhsContractingDimSize == ShapedType::kDynamicSize &&
+        rhsContractingDimSize >= 0) {
+      lhsShape[lhsContractingDim] = rhsContractingDimSize;
+      auto newRankTy = RankedTensorType::get(lhsShape, lhsTy.getElementType());
+      lhs = rewriter.create<tensor::CastOp>(op->getLoc(), newRankTy, lhs);
+    } else if (rhsContractingDimSize == ShapedType::kDynamicSize &&
+               lhsContractingDimSize >= 0) {
+      rhsShape[rhsContractingDim] = lhsContractingDimSize;
+      auto newRankTy = RankedTensorType::get(rhsShape, rhsTy.getElementType());
+      rhs = rewriter.create<tensor::CastOp>(op->getLoc(), newRankTy, rhs);
+    }
+  }
+  SmallVector<int64_t> outShape;
+  // set batch dims, will skip invalid dimensions
+  for (int64_t k = 0; k < static_cast<int64_t>(lhsShape.size()); ++k) {
+    if (k == lhsResultDim || k == lhsContractingDim)
+      continue;
+    outShape.push_back(lhsShape[k]);
+  }
+  for (int64_t k = 0, b = 0; k < static_cast<int64_t>(rhsShape.size()); ++k) {
+    if (b >= static_cast<int64_t>(outShape.size()))
+      break;
+    if (k == rhsResultDim || k == rhsContractingDim)
+      continue;
+    if (outShape[b] == ShapedType::kDynamicSize && rhsShape[k] >= 0) {
+      outShape[b] = rhsShape[k];
+    }
+    b++;
+  }
+
+  // set result dimensions
+  if (lhsResultDim < static_cast<int64_t>(lhsShape.size()) && lhsResultDim >= 0) {
+    outShape.push_back(lhsShape[lhsResultDim]);
+  }
+  if (rhsResultDim < static_cast<int64_t>(rhsShape.size()) && rhsResultDim >= 0) {
+    outShape.push_back(rhsShape[rhsResultDim]);
+  }
+  return RankedTensorType::get(outShape, lhsTy.getElementType());
+}
+
 void getBmmBroadcast(PatternRewriter &rewriter, Operation *op, Value &inpLhs,
-                     Value &inpRhs, int64_t leadingRank) {
+                     Value &inpRhs, int64_t leadingRank,
+                     size_t dimSizeIndexBits) {
   Value lhs = inpLhs;
   Value rhs = inpRhs;
   auto lhsRankTy = inpLhs.getType().dyn_cast<RankedTensorType>();
@@ -92,9 +151,10 @@ void getBmmBroadcast(PatternRewriter &rewriter, Operation *op, Value &inpLhs,
     std::vector<int64_t> newShape(rhsShape.begin(),
                                   rhsShape.begin() + leadingRank);
     newShape.insert(newShape.end(), lhsShape.begin(), lhsShape.end());
-    auto newDimSizes =
-        *mhlo::getDimSizesOfTensor(rewriter, op, rhs, leadingDims);
-    auto lhsDimSizes = *mhlo::getDimSizesOfTensor(rewriter, op, lhs);
+    auto newDimSizes = *mhlo::getDimSizesOfTensor(
+        rewriter, op, rhs, leadingDims, dimSizeIndexBits);
+    auto lhsDimSizes =
+        *mhlo::getDimSizesOfTensor(rewriter, op, lhs, dimSizeIndexBits);
     newDimSizes.insert(newDimSizes.end(), lhsDimSizes.begin(),
                        lhsDimSizes.end());
     lhs = getBroadcastTensor(rewriter, op, lhs, newShape, newDimSizes,
@@ -103,9 +163,10 @@ void getBmmBroadcast(PatternRewriter &rewriter, Operation *op, Value &inpLhs,
     std::vector<int64_t> newShape(lhsShape.begin(),
                                   lhsShape.begin() + leadingRank);
     newShape.insert(newShape.end(), rhsShape.begin(), rhsShape.end());
-    auto newDimSizes =
-        *mhlo::getDimSizesOfTensor(rewriter, op, lhs, leadingDims);
-    auto rhsDimSizes = *mhlo::getDimSizesOfTensor(rewriter, op, rhs);
+    auto newDimSizes = *mhlo::getDimSizesOfTensor(
+        rewriter, op, lhs, leadingDims, dimSizeIndexBits);
+    auto rhsDimSizes =
+        *mhlo::getDimSizesOfTensor(rewriter, op, rhs, dimSizeIndexBits);
     newDimSizes.insert(newDimSizes.end(), rhsDimSizes.begin(),
                        rhsDimSizes.end());
     rhs = getBroadcastTensor(rewriter, op, rhs, newShape, newDimSizes,
@@ -122,9 +183,9 @@ void getBmmBroadcast(PatternRewriter &rewriter, Operation *op, Value &inpLhs,
 // implement their specialized input processing (e.g transpose), and output
 // processing, e.g. GEMM or fully connected bias handling.
 template <typename AtenOpT>
-class ConvertAtenMatmulBaseOp : public OpConversionPattern<AtenOpT> {
+class ConvertAtenMatmulBaseOp : public ConvertAtenOp<AtenOpT> {
 public:
-  using OpConversionPattern<AtenOpT>::OpConversionPattern;
+  using ConvertAtenOp<AtenOpT>::ConvertAtenOp;
   using OpAdaptor = typename AtenOpT::Adaptor;
   // Each variant must implement corresponding parameter parsing options.
   // Maintain separate input read functions for each variant because it is not
@@ -159,26 +220,35 @@ public:
       return success();
     }
 
+    const auto &options = ConvertAtenOp<AtenOpT>::getOptions();
     int64_t nBatchDims;
     if (rhsRank <= 2) {
       auto leadingRank = lhsRank - 2;
-      getBmmBroadcast(rewriter, op, lhs, rhs, leadingRank);
+      getBmmBroadcast(rewriter, op, lhs, rhs, leadingRank,
+                      options.dimSizeIndexBits);
       nBatchDims = leadingRank;
     } else if (lhsRank <= 2) {
       auto leadingRank = rhsRank - 2;
-      getBmmBroadcast(rewriter, op, lhs, rhs, leadingRank);
+      getBmmBroadcast(rewriter, op, lhs, rhs, leadingRank,
+                      options.dimSizeIndexBits);
       nBatchDims = leadingRank;
     } else {
       assert(rhsRank > 2 && lhsRank > 2);
       auto leadingRank = std::max(lhsRank - rhsRank, rhsRank - lhsRank);
       nBatchDims = std::max(lhsRank - 2, rhsRank - 2);
-      getBmmBroadcast(rewriter, op, lhs, rhs, leadingRank);
+      getBmmBroadcast(rewriter, op, lhs, rhs, leadingRank,
+                      options.dimSizeIndexBits);
     }
     auto batchDims = llvm::to_vector<4>(llvm::seq<int64_t>(0, nBatchDims));
+
+    auto lhsResultDim = nBatchDims;
+    auto rhsResultDim = nBatchDims + 1;
     auto lhsContractingDim = nBatchDims + 1;
     auto rhsContractingDim = nBatchDims;
-    if (lhsRank == 1)
+    if (lhsRank == 1) {
+      lhsResultDim = nBatchDims + 1;
       lhsContractingDim = nBatchDims;
+    }
 
     mhlo::DotDimensionNumbersAttr dotDimensionNumbers =
         mhlo::DotDimensionNumbersAttr::get(
@@ -187,15 +257,13 @@ public:
             /*rhsBatchingDimensions=*/batchDims,
             /*lhsContractingDimensions=*/{lhsContractingDim},
             /*rhsContractingDimensions=*/{rhsContractingDim});
-    auto resultTy = OpConversionPattern<AtenOpT>::getTypeConverter()
-                        ->convertType(op.getType())
-                        .template cast<RankedTensorType>();
-
+    auto outTy =
+        castContractingDim(rewriter, op, lhs, rhs, lhsResultDim, rhsResultDim,
+                           lhsContractingDim, rhsContractingDim);
     output = rewriter
-                 .create<mhlo::DotGeneralOp>(op->getLoc(), resultTy, lhs, rhs,
+                 .create<mhlo::DotGeneralOp>(op->getLoc(), outTy, lhs, rhs,
                                              dotDimensionNumbers, nullptr)
                  .getResult();
-
     return success();
   }
 
@@ -213,9 +281,9 @@ public:
     if (failed(performMatmul(op, adaptor, rewriter, lhs, rhs, output)))
       return op.emitError("failed to perform matmul operation");
 
-    rewriter.replaceOpWithNewOp<mhlo::ConvertOp>(
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(
         op,
-        OpConversionPattern<AtenOpT>::getTypeConverter()
+        ConvertAtenOp<AtenOpT>::getTypeConverter()
             ->convertType(op.getType())
             .template cast<RankedTensorType>(),
         output);
@@ -340,13 +408,22 @@ public:
     auto rhsTy = rhs.getType().cast<RankedTensorType>();
     auto leadingRank = std::max(lhsTy.getRank() - rhsTy.getRank(),
                                 rhsTy.getRank() - lhsTy.getRank());
-    getBmmBroadcast(rewriter, op, lhs, rhs, leadingRank);
+
+    const auto &options = ConvertAtenOp<AtenOpT>::getOptions();
+    getBmmBroadcast(rewriter, op, lhs, rhs, leadingRank,
+                    options.dimSizeIndexBits);
     auto resultRank = std::max(lhsTy.getRank(), rhsTy.getRank());
     auto nBatchDims = resultRank - 2;
     auto batchDims = llvm::to_vector<4>(llvm::seq<int64_t>(0, nBatchDims));
+
+    auto lhsResultDim = nBatchDims;
+    auto rhsResultDim = nBatchDims + 1;
     auto lhsContractingDim = nBatchDims + 1;
     auto rhsContractingDim = nBatchDims;
 
+    auto outTy =
+        castContractingDim(rewriter, op, lhs, rhs, lhsResultDim, rhsResultDim,
+                           lhsContractingDim, rhsContractingDim);
     mhlo::DotDimensionNumbersAttr dotDimensionNumbers =
         mhlo::DotDimensionNumbersAttr::get(
             rewriter.getContext(),
@@ -354,35 +431,28 @@ public:
             /*rhsBatchingDimensions=*/batchDims,
             /*lhsContractingDimensions=*/{lhsContractingDim},
             /*rhsContractingDimensions=*/{rhsContractingDim});
-
-    auto resultTy =
-        OpConversionPattern<AtenOpT>::getTypeConverter()->convertType(
-            op.getType());
-
     Value matmulOutput = rewriter.create<mhlo::DotGeneralOp>(
-        op->getLoc(), resultTy, lhs, rhs, dotDimensionNumbers, nullptr);
+        op->getLoc(), outTy, lhs, rhs, dotDimensionNumbers, nullptr);
 
     Value matmulPlusBias = matmulOutput;
     if (!biasTy.template isa<Torch::NoneType>()) {
       // Bias addition broadcasts to the matmul output shape.
-      matmulPlusBias =
-          rewriter
-              .create<chlo::BroadcastAddOp>(op->getLoc(), resultTy,
-                                            matmulOutput, bias, nullptr)
-              .getResult();
+      matmulPlusBias = rewriter
+                           .create<chlo::BroadcastAddOp>(
+                               op->getLoc(), outTy, matmulOutput, bias, nullptr)
+                           .getResult();
     }
 
-    rewriter.replaceOpWithNewOp<mhlo::ConvertOp>(op, resultTy, matmulPlusBias);
+    auto resultTy =
+        ConvertAtenOp<AtenOpT>::getTypeConverter()->convertType(op.getType());
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultTy, matmulPlusBias);
     return success();
   }
 };
 
-} // namespace
-
-namespace {
-class ConvertAtenConvolutionOp : public OpConversionPattern<AtenConvolutionOp> {
+class ConvertAtenConvolutionOp : public ConvertAtenOp<AtenConvolutionOp> {
 public:
-  using OpConversionPattern<AtenConvolutionOp>::OpConversionPattern;
+  using ConvertAtenOp<AtenConvolutionOp>::ConvertAtenOp;
   using OpAdaptor = typename AtenConvolutionOp::Adaptor;
 
   Value reshapeConvWeight(PatternRewriter &rewriter, Operation *op,
@@ -390,8 +460,9 @@ public:
     auto weightTy = weight.getType().cast<RankedTensorType>();
     auto weightElemTy = weightTy.getElementType();
     auto rank = weightTy.getRank();
-    SmallVector<Value> weightShapeVec =
-        *mhlo::getDimSizesOfTensor(rewriter, op, weight);
+    const auto &options = getOptions();
+    SmallVector<Value> weightShapeVec = *mhlo::getDimSizesOfTensor(
+        rewriter, op, weight, options.dimSizeIndexBits);
     auto weightShape = weightTy.getShape();
     SmallVector<int64_t> weightShapeInt(rank);
     std::copy(weightShape.begin(), weightShape.end(), weightShapeInt.begin());
@@ -714,7 +785,10 @@ public:
     // Reshape and promote bias
     auto inputUnsqzDims =
         llvm::to_vector<4>(llvm::seq<int64_t>(-nSpatialDims, 0));
-    bias = *mhlo::unsqueezeTensor(rewriter, op, bias, inputUnsqzDims);
+
+    const auto &options = getOptions();
+    bias = *mhlo::unsqueezeTensor(rewriter, op, bias, inputUnsqzDims,
+                                  options.dimSizeIndexBits);
     bias = mhlo::promoteType(rewriter, bias, outTy);
 
     DenseIntElementsAttr bcastDimensions;
@@ -727,31 +801,31 @@ public:
 
 void mlir::torch::torch_to_mhlo::populateLinearOpPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
-    ConversionTarget &target) {
+    ConversionTarget &target, const TorchToMhloOptions &options) {
   MLIRContext *context = patterns.getContext();
 
 #define INSERT_MATMUL_ATENOP_PATTERN(AtenOp)                                   \
   target.addIllegalOp<AtenOp>();                                               \
-  patterns.add<ConvertAtenMatMulOp<AtenOp>>(typeConverter, context);
+  patterns.add<ConvertAtenMatMulOp<AtenOp>>(typeConverter, context, options)
   INSERT_MATMUL_ATENOP_PATTERN(AtenMatmulOp);
 #undef INSERT_MATMUL_ATEMOP_PATTERN
 
 #define INSERT_MM_ATENOP_PATTERN(AtenOp)                                       \
   target.addIllegalOp<AtenOp>();                                               \
-  patterns.add<ConvertAtenMmOp<AtenOp>>(typeConverter, context);
+  patterns.add<ConvertAtenMmOp<AtenOp>>(typeConverter, context, options)
   INSERT_MM_ATENOP_PATTERN(AtenMmOp);
   INSERT_MM_ATENOP_PATTERN(AtenBmmOp);
 #undef INSERT_MM_ATEMOP_PATTERN
 
 #define INSERT_LINEAR_ATENOP_PATTERN(AtenOp)                                   \
   target.addIllegalOp<AtenOp>();                                               \
-  patterns.add<ConvertAtenLinearOp<AtenOp>>(typeConverter, context);
+  patterns.add<ConvertAtenLinearOp<AtenOp>>(typeConverter, context, options)
   INSERT_LINEAR_ATENOP_PATTERN(AtenLinearOp);
 #undef INSERT_LINEAR_ATEMOP_PATTERN
 
 #define INSERT_CONVOLUTION_ATENOP_PATTERN(AtenOp)                              \
   target.addIllegalOp<AtenOp>();                                               \
-  patterns.add<ConvertAtenConvolutionOp>(typeConverter, context);
+  patterns.add<ConvertAtenConvolutionOp>(typeConverter, context, options)
   INSERT_CONVOLUTION_ATENOP_PATTERN(AtenConvolutionOp);
 #undef INSERT_CONVOLUTION_ATENOP_PATTERN
 }

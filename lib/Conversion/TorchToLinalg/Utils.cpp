@@ -11,7 +11,7 @@
 
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -46,9 +46,9 @@ Value torch_to_linalg::getPaddedTensor(
       getIndexIntsAsOpFoldResult(b, lowPaddingInts);
   SmallVector<OpFoldResult> highPaddings =
       getIndexIntsAsOpFoldResult(b, highPaddingInts);
-  Value paddedInput = tensor::createPadScalarOp(
-      rankedTensorType, input, pad, /*low=*/lowPaddings, /*high=*/highPaddings,
-      /*packing=*/false, loc, b);
+  Value paddedInput =
+      b.create<tensor::PadOp>(loc, rankedTensorType, input, /*low=*/lowPaddings,
+                              /*high=*/highPaddings, pad);
   return paddedInput;
 }
 
@@ -94,6 +94,31 @@ Value torch_to_linalg::getOutputDimForConvOps(OpBuilder &b, Location loc,
   else
     division = b.create<arith::FloorDivSIOp>(loc, dividend, strideInt);
   Value out = b.create<arith::AddIOp>(loc, division, c1);
+  return castIntToIndex(b, loc, out);
+}
+
+Value torch_to_linalg::getOutputDimForConvTransposeOps(
+    OpBuilder &b, Location loc, Value in, Value paddingInt, Value dilationInt,
+    Value kernelSizeInt, Value strideInt) {
+  Value c1 = b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(1));
+  Value c2 = b.create<arith::ConstantOp>(loc, b.getI64IntegerAttr(2));
+
+  // (in - 1) * stride
+  Value inStrided =
+      b.create<arith::SubIOp>(loc, castIndexToInt64(b, loc, in), c1);
+  inStrided = b.create<arith::MulIOp>(loc, inStrided, strideInt);
+
+  // 2 * padding
+  Value doublePadding = b.create<arith::MulIOp>(loc, paddingInt, c2);
+
+  // (kernelSize - 1) * dilation
+  Value kernelDilated = b.create<arith::SubIOp>(loc, kernelSizeInt, c1);
+  kernelDilated = b.create<arith::MulIOp>(loc, kernelDilated, dilationInt);
+
+  Value out = b.create<arith::SubIOp>(loc, inStrided, doublePadding);
+  out = b.create<arith::AddIOp>(loc, out, kernelDilated);
+  out = b.create<arith::AddIOp>(loc, out, c1);
+
   return castIntToIndex(b, loc, out);
 }
 
@@ -246,7 +271,7 @@ Value torch_to_linalg::createElementwiseLinalgGeneric(
   // Add the indexing map for the outs init tensor.
   indexingMaps.push_back(b.getMultiDimIdentityMap(resultRank));
 
-  Value initTensor = b.create<linalg::InitTensorOp>(
+  Value initTensor = b.create<tensor::EmptyOp>(
       loc, getAsOpFoldResult(resultShape), resultElementType);
   return b
       .create<linalg::GenericOp>(loc,
@@ -320,8 +345,8 @@ LogicalResult torch_to_linalg::broadcastToGivenShape(
     outExpr.push_back(mlir::getAffineDimExpr(i, context));
   }
 
-  Value outTensor =
-      rewriter.create<linalg::InitTensorOp>(loc, outShape, elementType);
+  Value outTensor = rewriter.create<tensor::EmptyOp>(
+      loc, getAsOpFoldResult(outShape), elementType);
 
   SmallVector<AffineMap> indexingMaps = {
       AffineMap::get(broadcastToShape.size(), 0, outExpr, context),
@@ -337,4 +362,12 @@ LogicalResult torch_to_linalg::broadcastToGivenShape(
                .getResult(0);
 
   return success();
+}
+
+Value torch_to_linalg::removeSizeInformation(OpBuilder &b, Location loc,
+                                             Value tensor) {
+  auto tensorType = tensor.getType().cast<RankedTensorType>();
+  auto rank = tensorType.getRank();
+  SmallVector<int64_t> unknownSizes(rank, kUnknownSize);
+  return b.create<tensor::CastOp>(loc, tensorType.clone(unknownSizes), tensor);
 }

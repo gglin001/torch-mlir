@@ -12,7 +12,7 @@
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
 #include "Utils.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -63,14 +63,14 @@ checkAndGetPoolingParameters(OpTy op, ConversionPatternRewriter &rewriter,
 template <typename OpTy>
 static LogicalResult createPoolingOp(
     Operation *op, ConversionPatternRewriter &rewriter, Value self,
-    bool supportFPInputOnly, bool ceilMode,
+    bool supportNonFPInput, bool ceilMode,
     SmallVectorImpl<Value> &kernelSizeIntValues,
     SmallVectorImpl<int64_t> &strideInts, SmallVectorImpl<int64_t> &paddingInts,
     SmallVectorImpl<int64_t> &dilationInts, Attribute initValueAttr,
     SmallVectorImpl<Value> &outTensorShape, Value &paddedInput, Value &result) {
   Location loc = op->getLoc();
   Type elementType = self.getType().cast<RankedTensorType>().getElementType();
-  if (!elementType.isa<mlir::FloatType>() && !supportFPInputOnly)
+  if (!elementType.isa<mlir::FloatType>() && !supportNonFPInput)
     return op->emitError("unimplemented: non-floating point type");
 
   SmallVector<int64_t, 4> lowPaddingIncludingNC = {0, 0};
@@ -111,9 +111,9 @@ static LogicalResult createPoolingOp(
 
   auto stridesAttr = rewriter.getI64VectorAttr(strideInts);
   auto dilationAttr = rewriter.getI64VectorAttr(dilationInts);
-  Value windowTensor = rewriter.create<linalg::InitTensorOp>(
-      loc, castIntVectorToIndexVector(rewriter, loc, kernelSizeIntValues),
-      elementType);
+  auto shape = castIntVectorToIndexVector(rewriter, loc, kernelSizeIntValues);
+  Value windowTensor = rewriter.create<tensor::EmptyOp>(
+      loc, getAsOpFoldResult(shape), elementType);
 
   result = rewriter
                .create<OpTy>(loc, outTensorInitialized.getType(),
@@ -163,7 +163,7 @@ public:
     // `maxpool2d` contains the result of maxpool2d operation over the input.
     Value maxPool2d, paddedInput;
     if (failed(createPoolingOp<linalg::PoolingNchwMaxOp>(
-            op, rewriter, self, /*supportFPInput=*/false, ceilMode,
+            op, rewriter, self, /*supportNonFPInput=*/false, ceilMode,
             kernelSizeIntValues, strideInts, paddingInts, dilationInts,
             smallestFPValueAttr, outTensorShape, paddedInput, maxPool2d)))
       return rewriter.notifyMatchFailure(op, "unable to compute maxpool2d");
@@ -240,7 +240,7 @@ public:
     Value maxPool2d, paddedInput;
     SmallVector<Value, 4> outTensorShape;
     if (failed(createPoolingOp<linalg::PoolingNchwMaxOp>(
-            op, rewriter, self, /*supportFPInput=*/false, ceilMode,
+            op, rewriter, self, /*supportNonFPInput=*/false, ceilMode,
             kernelSizeIntValues, strideInts, paddingInts, dilationInts,
             smallestFPValueAttr, outTensorShape, paddedInput, maxPool2d)))
       return rewriter.notifyMatchFailure(op, "unable to compute maxpool2d");
@@ -260,8 +260,9 @@ public:
     SmallVector<Value> stride =
         getAsConstantIndexValues(rewriter, loc, strideInts);
 
-    Value windowTensor = rewriter.create<linalg::InitTensorOp>(
-        loc, kernelSize, indicesRankedTensorType.getElementType());
+    Value windowTensor = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(kernelSize),
+        indicesRankedTensorType.getElementType());
 
     SmallVector<AffineExpr> inputExprs, outputExprs, kernelExprs;
     for (unsigned i = 0; i < 4; i++) {
@@ -394,7 +395,7 @@ public:
     Value sumPool2d, paddedInput;
     SmallVector<Value, 4> outTensorShape;
     if (failed(createPoolingOp<linalg::PoolingNchwSumOp>(
-            op, rewriter, self, /*supportFPInput=*/true, ceilMode,
+            op, rewriter, self, /*supportNonFPInput=*/true, ceilMode,
             kernelSizeIntValues, strideInts, paddingInts, dilationInts,
             rewriter.getZeroAttr(inputElementType), outTensorShape, paddedInput,
             sumPool2d)))
@@ -407,8 +408,8 @@ public:
                         : adaptor.divisor_override();
     divisor = convertScalarToDtype(rewriter, loc, divisor, resultElementType);
 
-    Value outputTensor = rewriter.create<linalg::InitTensorOp>(
-        loc, outTensorShape, resultElementType);
+    Value outputTensor = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(outTensorShape), resultElementType);
     SmallVector<AffineMap> indexingMapsAvg(2,
                                            rewriter.getMultiDimIdentityMap(4));
     SmallVector<StringRef> iteratorTypesAvg(4, "parallel");

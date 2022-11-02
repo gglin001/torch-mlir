@@ -5,9 +5,9 @@
 
 import torch
 
-from torch_mlir_e2e_test.torchscript.framework import TestUtils
-from torch_mlir_e2e_test.torchscript.registry import register_test_case
-from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
+from torch_mlir_e2e_test.framework import TestUtils
+from torch_mlir_e2e_test.registry import register_test_case
+from torch_mlir_e2e_test.annotations import annotate_args, export
 
 # ==============================================================================
 
@@ -57,7 +57,7 @@ class TypeConversionI32ToI64Module(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TypeConversionI32ToI64Module())
 def TypeConversionI32ToI64Module_basic(module, tu: TestUtils):
-    module.forward(torch.randint(5, [2, 3]).type(torch.int32))
+    module.forward(tu.randint(2, 3, high=5).type(torch.int32))
 
 
 class TypeConversionI64ToI32Module(torch.nn.Module):
@@ -73,7 +73,7 @@ class TypeConversionI64ToI32Module(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TypeConversionI64ToI32Module())
 def TypeConversionI64ToI32Module_basic(module, tu: TestUtils):
-    module.forward(torch.randint(5, [2, 3]))
+    module.forward(tu.randint(2, 3, high=5))
 
 
 class TypeConversionI1ToI32Module(torch.nn.Module):
@@ -89,7 +89,7 @@ class TypeConversionI1ToI32Module(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TypeConversionI1ToI32Module())
 def TypeConversionI1ToI32Module_basic(module, tu: TestUtils):
-    tensor = torch.randint(0, 2, (3, 4), dtype=torch.bool)
+    tensor = tu.randint(3, 4, low=0, high=2).to(torch.bool)
     module.forward(tensor)
 
 
@@ -106,7 +106,7 @@ class TypeConversionI1ToI64Module(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TypeConversionI1ToI64Module())
 def TypeConversionI1ToI64Module_basic(module, tu: TestUtils):
-    tensor = torch.randint(0, 2, (3, 4), dtype=torch.bool)
+    tensor = tu.randint(3, 4, low=0, high=2).to(torch.bool)
     module.forward(tensor)
 
 
@@ -123,7 +123,7 @@ class TypeConversionI1ToF32Module(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TypeConversionI1ToF32Module())
 def TypeConversionI1ToF32Module_basic(module, tu: TestUtils):
-    tensor = torch.randint(0, 2, (3, 4), dtype=torch.bool)
+    tensor = tu.randint(3, 4, low=0, high=2).to(torch.bool)
     module.forward(tensor)
 
 
@@ -140,7 +140,7 @@ class TypeConversionI1ToF64Module(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: TypeConversionI1ToF64Module())
 def TypeConversionI1ToF64Module_basic(module, tu: TestUtils):
-    tensor = torch.randint(0, 2, (3, 4), dtype=torch.bool)
+    tensor = tu.randint(3, 4, low=0, high=2).to(torch.bool)
     module.forward(tensor)
 
 
@@ -193,13 +193,13 @@ def ToDtypeLayoutStridedModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(3, 5))
 
 
-class ToDtypeBoolLayoutNoneModule(torch.nn.Module):
+class ToDtypeBoolLayoutNoneStaticModule(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
 
     @export
-    @annotate_args([None, ([-1, -1], torch.float32, True)])
+    @annotate_args([None, ([3, 5], torch.int64, True)])
     def forward(self, x):
         return torch.ops.aten.to(x,
                                  dtype=torch.bool,
@@ -211,6 +211,26 @@ class ToDtypeBoolLayoutNoneModule(torch.nn.Module):
                                  memory_format=None)
 
 
-@register_test_case(module_factory=lambda: ToDtypeBoolLayoutNoneModule())
-def ToDtypeBoolLayoutNoneModule_basic(module, tu: TestUtils):
-    module.forward(tu.rand(3, 5))
+@register_test_case(module_factory=lambda: ToDtypeBoolLayoutNoneStaticModule())
+def ToDtypeBoolLayoutNoneStaticModule_basic(module, tu: TestUtils):
+    module.forward(tu.randint(3, 5))
+
+
+class TypeAsSameModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.float32, True),
+        ([-1, -1], torch.float32, True),
+    ])
+    def forward(self, x, y):
+        return torch.ops.aten.type_as(x, y)
+
+
+@register_test_case(module_factory=lambda: TypeAsSameModule())
+def TypeAsSameModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(3, 5), tu.rand(3, 5))

@@ -11,6 +11,7 @@
 #include <torch/csrc/lazy/backend/backend_data.h>
 #include <torch/csrc/lazy/backend/backend_device.h>
 #include <torch/csrc/lazy/backend/lowering_context.h>
+#include <torch/csrc/lazy/core/lazy_graph_executor.h>
 #include <torch/csrc/lazy/core/shape.h>
 
 #include <torch_mlir/csrc/base_lazy_backend/backend_impl.h>
@@ -66,6 +67,11 @@ public:
 
     // Vendor backend specific lowering can be exec here before returning.
     for (const auto& instance : instances) {
+      TORCH_CHECK(
+          instance->in_mark_step,
+          "Compile outside of mark step:\n",
+          GetComputationBackendText(instance)
+      );
       // Store computation instance for external access after compilation.
       GetLatestComputation() = instance;
     }
@@ -103,15 +109,17 @@ public:
     for (const auto& argument : arguments) {
       const auto mlir_data =
           std::static_pointer_cast<TorchMlirBackendData>(argument);
-      if (mlir_data->mlir_info()->scalar.has_value()) {
-        stack.emplace_back(mlir_data->mlir_info()->scalar.value());
+      auto* info = dynamic_cast<TorchMlirBackendData::Info*>(mlir_data->mlir_info());
+      TORCH_CHECK(info);
+      if (info->scalar.has_value()) {
+        stack.emplace_back(info->scalar.value());
       } else {
-        at::Tensor tensor = mlir_data->mlir_info()->tensor;
+        at::Tensor tensor = info->tensor;
         stack.emplace_back(tensor);
       }
 
       // count number of inputs
-      auto name = mlir_data->mlir_info()->name;
+      auto name = info->name;
       if (startswith(name, "input_")) {
         // Printing tensor name for testing purposes
         std::cout << "Input tensor: " << name << std::endl;
@@ -179,6 +187,9 @@ void InitReferenceLazyBackend() {
   at::RegisterTorchMlirLazyNativeFunctions();
   static std::unique_ptr<BackendRegistrar> g_registrar;
   g_registrar.reset(new BackendRegistrar(GetReferenceLazyBackendImpl()));
+
+  static LazyGraphExecutor* executor = new LazyGraphExecutor();
+  LazyGraphExecutor::Register(executor);
 }
 
 ComputationPtr& GetLatestComputation() {

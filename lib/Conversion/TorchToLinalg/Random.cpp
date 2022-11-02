@@ -12,7 +12,7 @@
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
 #include "Utils.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -59,12 +59,11 @@ public:
 
 
 namespace {
-class ConvertValsemVariantAtenUniformOp
-    : public OpConversionPattern<ValsemVariantAtenUniformOp> {
+class ConvertAtenUniformOp : public OpConversionPattern<AtenUniformOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
-  matchAndRewrite(ValsemVariantAtenUniformOp op, OpAdaptor adaptor,
+  matchAndRewrite(AtenUniformOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
@@ -118,7 +117,7 @@ public:
                                          getParallelIteratorTypeName());
     SmallVector<Value> sizes = getTensorSizes(rewriter, loc, self);
     Value initTensor =
-        rewriter.create<linalg::InitTensorOp>(loc, sizes, elemTy);
+        rewriter.create<tensor::EmptyOp>(loc, getAsOpFoldResult(sizes), elemTy);
     Value uniformRes =
         rewriter
             .create<linalg::GenericOp>(
@@ -162,6 +161,6 @@ void mlir::torch::torch_to_linalg::populateRandomPatternsAndLegality(
   MLIRContext *context = patterns.getContext();
   target.addIllegalOp<AtenDropoutOp>();
   patterns.add<ConvertAtenDropoutOp>(typeConverter, context);
-  target.addIllegalOp<ValsemVariantAtenUniformOp>();
-  patterns.add<ConvertValsemVariantAtenUniformOp>(typeConverter, context);
+  target.addIllegalOp<AtenUniformOp>();
+  patterns.add<ConvertAtenUniformOp>(typeConverter, context);
 }

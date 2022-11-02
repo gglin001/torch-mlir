@@ -34,26 +34,26 @@ using namespace mlir::tosa;
 // Pass registration
 //===----------------------------------------------------------------------===//
 
-namespace {
+namespace reg {
 #define GEN_PASS_REGISTRATION
 #include "torch-mlir/Dialect/TorchConversion/Transforms/Passes.h.inc"
-} // end namespace
+} // end namespace reg
 
 void mlir::torch::registerTorchConversionPasses() {
-  ::registerPasses();
-  mlir::PassPipelineRegistration<Torch::TorchLoweringPipelineOptions>(
+  reg::registerPasses();
+  mlir::PassPipelineRegistration<>(
       "torch-backend-to-linalg-on-tensors-backend-pipeline",
       "Pipeline lowering torch backend contract to linalg-on-tensors backend "
       "contract.",
       TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline);
 
-  mlir::PassPipelineRegistration<Torch::TorchLoweringPipelineOptions>(
+  mlir::PassPipelineRegistration<>(
       "torch-backend-to-tosa-backend-pipeline",
       "Pipeline lowering torch backend contract to TOSA backend "
       "contract.",
       TorchConversion::createTorchBackendToTosaBackendPipeline);
 #ifdef TORCH_MLIR_ENABLE_MHLO
-  mlir::PassPipelineRegistration<Torch::TorchLoweringPipelineOptions>(
+  mlir::PassPipelineRegistration<TorchConversion::MhloBackendPipelineOptions>(
       "torch-backend-to-mhlo-backend-pipeline",
       "Pipeline lowering torch backend contract to MHLO backend "
       "contract.",
@@ -62,11 +62,7 @@ void mlir::torch::registerTorchConversionPasses() {
 }
 
 void TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline(
-    OpPassManager &pm, const Torch::TorchLoweringPipelineOptions &options) {
-  // Check some invariants to catch errors in a clear way.
-  pm.addPass(
-      TorchConversion::createVerifyInvariantsBeforeBackendLoweringPass());
-
+    OpPassManager &pm) {
   // Lower to linalg + guards which is the input to codegen backends.
   // We do this first as it tends to involve pattern-matching against constants,
   // (e.g. dimensions which must be constant in a ranked programming model)
@@ -100,11 +96,7 @@ void TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline(
 }
 
 void TorchConversion::createTorchBackendToTosaBackendPipeline(
-    OpPassManager &pm, const Torch::TorchLoweringPipelineOptions &options) {
-  // Check some invariants to catch errors in a clear way.
-  pm.addPass(
-      TorchConversion::createVerifyInvariantsBeforeBackendLoweringPass());
-
+    OpPassManager &pm) {
   pm.addNestedPass<func::FuncOp>(createConvertTorchToTosaPass());
   // Perform rank broadcasting so TosaToLinalg pass works
   pm.addNestedPass<func::FuncOp>(createTosaMakeBroadcastablePass());
@@ -129,12 +121,10 @@ void TorchConversion::createTorchBackendToTosaBackendPipeline(
 
 #ifdef TORCH_MLIR_ENABLE_MHLO
 void TorchConversion::createTorchBackendToMhloBackendPipeline(
-    OpPassManager &pm, const Torch::TorchLoweringPipelineOptions &options) {
-  // Check some invariants to catch errors in a clear way.
-  pm.addPass(
-      TorchConversion::createVerifyInvariantsBeforeBackendLoweringPass());
-
-  pm.addNestedPass<func::FuncOp>(createConvertTorchToMhloPass());
+    OpPassManager &pm,
+    const TorchConversion::MhloBackendPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createConvertTorchToMhloPass(
+      options.enableStaticShape, options.enableI32Index));
 
   // Clean up any non-canonical code introduced above..
   pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
@@ -153,5 +143,9 @@ void TorchConversion::createTorchBackendToMhloBackendPipeline(
   pm.addPass(TorchConversion::createFuncBackendTypeConversionPass());
   pm.addNestedPass<func::FuncOp>(
       TorchConversion::createFinalizingBackendTypeConversionPass());
+  // Verify that we have lowered to the form that MHLO backends
+  // expect. This fails compilation (signalPassFailure) if the IR is not in the
+  // correct form.
+  pm.addPass(TorchConversion::createVerifyMhloBackendContractPass());
 }
 #endif

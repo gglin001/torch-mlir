@@ -12,9 +12,10 @@
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
 #include "Utils.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Matchers.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
@@ -148,7 +149,7 @@ public:
     SmallVector<StringRef> iteratorTypes(sizes.size(),
                                          getParallelIteratorTypeName());
     Value initTensor =
-        rewriter.create<linalg::InitTensorOp>(loc, sizes, elemTy);
+        rewriter.create<tensor::EmptyOp>(loc, getAsOpFoldResult(sizes), elemTy);
     Value embeddingResult =
         rewriter
             .create<linalg::GenericOp>(
@@ -309,8 +310,10 @@ public:
           outputIndexingMap,
     };
 
-    SmallVector<StringRef> iteratorTypes(iterationMapDimension,
-                                           getParallelIteratorTypeName());
+    // Reduce along the indices dim
+    SmallVector<StringRef> iteratorTypes({getParallelIteratorTypeName(),
+                                          getReductionIteratorTypeName(),
+                                          getParallelIteratorTypeName()});
 
     Value embeddingDim = getDimOp(rewriter, loc, weight, 1);
     Value initTensor;
@@ -407,8 +410,8 @@ public:
     Type offsetElemTy = offsetsTy.getElementType();
     Value zeroDim = rewriter.create<arith::ConstantIndexOp>(loc, /*value=*/0);
     offsetResultSize.push_back(zeroDim);
-    Value offsetResult = rewriter.create<linalg::InitTensorOp>(
-        loc, offsetResultSize, offsetElemTy);
+    Value offsetResult = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(offsetResultSize), offsetElemTy);
     auto resultType1 = typeConverter->convertType(op->getResult(1).getType());
     Value castedOffsetResult =
         rewriter.create<tensor::CastOp>(loc, resultType1, offsetResult);
@@ -475,8 +478,8 @@ public:
 
     SmallVector<Value> resultShape = getTensorSizes(rewriter, loc, input);
     resultShape[dimInt] = getTensorSizes(rewriter, loc, indices)[0];
-    Value initTensor =
-        rewriter.create<linalg::InitTensorOp>(loc, resultShape, elementType);
+    Value initTensor = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(resultShape), elementType);
 
     SmallVector<AffineExpr> resultExpr;
     AffineExpr indicesExpr = rewriter.getAffineDimExpr(dimInt);
@@ -674,8 +677,8 @@ public:
     // safely map all size 1 dims to 0 in the corresponding affine maps.
     // TODO: For dynamic shapes, we have to either broadcast the index tensors
     // to a common shape or introduce some form of control flow.
-    Value initTensor =
-        rewriter.create<linalg::InitTensorOp>(loc, resultShape, elementType);
+    Value initTensor = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(resultShape), elementType);
     SmallVector<AffineMap> indexingMaps;
     SmallVector<StringRef> iteratorTypes;
 
@@ -753,6 +756,146 @@ public:
 };
 } // namespace
 
+// `getScaledDims` scales the `dim` value with a scale factor `ScaleFactor`.
+// The `dim` and `scaleFactor` are assumed to be of index and float type
+// respectively. `scaledDim = int(floor(float(dim) * scaleFactor))`.
+static Value getScaledDims(OpBuilder &builder, Location loc, Value dim,
+                           Value scaleFactor) {
+
+  Value dimInt = castIndexToInt64(builder, loc, dim);
+  Value dimFp =
+      builder.create<arith::SIToFPOp>(loc, scaleFactor.getType(), dimInt);
+  Value scaleDim = builder.create<arith::MulFOp>(loc, dimFp, scaleFactor);
+  Value floorDim = builder.create<math::FloorOp>(loc, scaleDim);
+  Value scaledDimToIndex = castIntToIndex(
+      builder, loc,
+      builder.create<arith::FPToSIOp>(loc, dimInt.getType(), floorDim));
+
+  return scaledDimToIndex;
+}
+
+// `getScaleFactor` returns the scale factor from input to output dimension.
+// The `dim` and `scaledDim` are assumed to be of index and int64 type
+// respectively. scale_factor = (scaled_dim // dim).
+static Value getScaleFactor(OpBuilder &builder, Location loc, Value dim,
+                            Value scaledDim) {
+  Value dimInt = castIndexToInt64(builder, loc, dim);
+  Value scaleFactorInt =
+      builder.create<arith::CeilDivSIOp>(loc, scaledDim, dimInt);
+  return scaleFactorInt;
+}
+
+// N, C, H, W = input_tensor.shape
+// N, C, H_scaled, W_scaled = out_tensor.shape
+// H_factor, W_factor = H_scaled/H, W_scaled/W
+
+// for i in range(N):
+//    for j in range(C):
+//      for k in range(H_scaled):
+//          for l in range(W_scaled):
+//              out_tensor[i, j, k, l] = input[i, j, k//H_factor, l//W_factor]
+
+namespace {
+class ConvertAtenUpsampleNearest2dVecOp
+    : public OpConversionPattern<AtenUpsampleNearest2dVecOp> {
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenUpsampleNearest2dVecOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    Location loc = op->getLoc();
+    Value input = adaptor.input();
+
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    auto inputType = input.getType().cast<RankedTensorType>();
+    auto inputRank = inputType.getRank();
+    Type elementType = inputType.getElementType();
+
+    SmallVector<Value> dims = getTensorSizes(rewriter, loc, input);
+    SmallVector<Value, 2> scaleFactorsInt;
+
+    // The dimension at which the scaling starts.
+    unsigned hDimOffset = 2;
+
+    if (!adaptor.scale_factors().getType().isa<Torch::NoneType>()) {
+      SmallVector<Value, 2> scaleFactorsTorchFloat;
+      if (!getListConstructElements(op.scale_factors(), scaleFactorsTorchFloat))
+        return rewriter.notifyMatchFailure(
+            op, "unimplemented: the scale_factors is not constructed from "
+                "ListConstruct");
+      SmallVector<Value, 2> scaleFactorsFloatValues;
+      scaleFactorsFloatValues = getTypeConvertedValues(
+          rewriter, loc, getTypeConverter(), scaleFactorsTorchFloat);
+      // Convert float values to int values.
+      // int_value = (int64_t)ceil(float_value)
+      for (auto floatValue : scaleFactorsFloatValues) {
+        Value ceilVal = rewriter.create<math::CeilOp>(loc, floatValue);
+        Value intVal = rewriter.create<arith::FPToSIOp>(
+            loc, rewriter.getI64Type(), ceilVal);
+        scaleFactorsInt.push_back(intVal);
+      }
+
+      for (unsigned i = 0; i < scaleFactorsFloatValues.size(); i++)
+        dims[hDimOffset + i] = getScaledDims(
+            rewriter, loc, dims[hDimOffset + i], scaleFactorsFloatValues[i]);
+
+    } else {
+
+      SmallVector<Value, 2> outputSizeTorchInt;
+      if (!getListConstructElements(op.output_size(), outputSizeTorchInt))
+        return rewriter.notifyMatchFailure(
+            op, "unimplemented: the output_size is not constructed from "
+                "ListConstruct");
+      SmallVector<Value, 2> outputSizeIntValues;
+      outputSizeIntValues = getTypeConvertedValues(
+          rewriter, loc, getTypeConverter(), outputSizeTorchInt);
+
+      for (unsigned i = 0; i < outputSizeTorchInt.size(); i++) {
+        auto scaleFactorVal = getScaleFactor(
+            rewriter, loc, dims[hDimOffset + i], outputSizeIntValues[i]);
+        scaleFactorsInt.push_back(scaleFactorVal);
+        dims[hDimOffset + i] =
+            castIntToIndex(rewriter, loc, outputSizeIntValues[i]);
+      }
+    }
+
+    Value outTensor = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(dims), elementType);
+
+    AffineMap idMap = rewriter.getMultiDimIdentityMap(inputRank);
+    SmallVector<StringRef> iteratorTypes(inputRank,
+                                         getParallelIteratorTypeName());
+
+    Value finalRes =
+        rewriter
+            .create<linalg::GenericOp>(
+                loc, outTensor.getType(), ValueRange{}, outTensor,
+                /*indexingMaps=*/idMap,
+                /*iteratorTypes=*/iteratorTypes,
+                [&](OpBuilder &b, Location loc, ValueRange args) {
+                  SmallVector<Value> indices;
+                  for (unsigned i = 0; i < inputRank; i++)
+                    indices.push_back(b.create<linalg::IndexOp>(loc, i));
+
+                  for (unsigned i = 0; i < (inputRank - hDimOffset); i++)
+                    indices[i + hDimOffset] = b.create<arith::FloorDivSIOp>(
+                        loc, indices[i + hDimOffset],
+                        castIntToIndex(rewriter, loc, scaleFactorsInt[i]));
+
+                  Value retVal =
+                      b.create<tensor::ExtractOp>(loc, input, indices);
+                  b.create<linalg::YieldOp>(loc, retVal);
+                })
+            .getResult(0);
+
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, finalRes);
+    return success();
+  }
+};
+} // namespace
+
 void mlir::torch::torch_to_linalg::
     populateIndirectDataMovementPatternsAndLegality(
         TypeConverter &typeConverter, RewritePatternSet &patterns,
@@ -768,4 +911,6 @@ void mlir::torch::torch_to_linalg::
   patterns.add<ConvertAtenIndexTensorOp>(typeConverter, context);
   target.addIllegalOp<AtenEmbeddingBagPaddingIdxOp>();
   patterns.add<ConvertAtenEmbeddingBagPaddingIdxOp>(typeConverter, context);
+  target.addIllegalOp<AtenUpsampleNearest2dVecOp>();
+  patterns.add<ConvertAtenUpsampleNearest2dVecOp>(typeConverter, context);
 }

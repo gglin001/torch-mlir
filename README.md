@@ -22,7 +22,7 @@ Multiple Vendors use MLIR as the middle layer, mapping from platform frameworks 
 
 We have few paths to lower down to the Torch MLIR Dialect.
 
-![Torch Lowering Architectures](Torch-MLIR.png)
+![Torch Lowering Architectures](docs/Torch-MLIR.png)
 
  - TorchScript
     This is the most tested path down to Torch MLIR Dialect, and the PyTorch ecosystem is converging on using TorchScript IR as a lingua franca.
@@ -45,7 +45,7 @@ python -m venv mlir_venv
 source mlir_venv/bin/activate
 # Some older pip installs may not be able to handle the recent PyTorch deps
 python -m pip install --upgrade pip
-pip install --pre torch-mlir torchvision -f https://github.com/llvm/torch-mlir/releases --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+pip install --pre torch-mlir torchvision -f https://llvm.github.io/torch-mlir/package-index/ --extra-index-url https://download.pytorch.org/whl/nightly/cpu
 # This will install the corresponding torch and torchvision nightlies
 ```
 
@@ -93,4 +93,4 @@ The project follows the conventions of typical MLIR-based projects:
 * `python` top level directory for Python code
 
 ## Developers
-If you would like to develop and build torch-mlir from source please look at [Development Notes](development.md)
+If you would like to develop and build torch-mlir from source please look at [Development Notes](docs/development.md)

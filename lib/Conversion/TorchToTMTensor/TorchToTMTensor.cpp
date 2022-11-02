@@ -10,10 +10,12 @@
 #include "torch-mlir/Conversion/TorchToTMTensor/TorchToTMTensor.h"
 
 #include "../PassDetail.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "torch-mlir-dialects/Dialect/TMTensor/IR/TMTensorDialect.h"
 #include "torch-mlir-dialects/Dialect/TMTensor/IR/TMTensorOps.h"
@@ -70,6 +72,29 @@ static Value createTMTensorScatterOp(
   Value originalElement = blockArgs[1];
   bodyBuild(regionBuilder, loc, updatesElement, originalElement);
   return scatterOp->getResult(0);
+}
+
+static Value createTMTensorScanOp(
+    OpBuilder &b, Location loc, Value input, Value output, Value accumulator,
+    int64_t dim, bool inclusive,
+    function_ref<void(OpBuilder &, Location, Value, Value)> bodyBuild) {
+  auto inputType = input.getType().cast<RankedTensorType>();
+  auto accType = accumulator.getType().cast<RankedTensorType>();
+  Type elementType = inputType.getElementType();
+  auto scanOp = b.create<TMTensor::ScanOp>(
+      loc, TypeRange{inputType, accType}, input,
+      ValueRange{output, accumulator}, b.getI64IntegerAttr(dim),
+      b.getBoolAttr(inclusive));
+
+  Region &scanOpRegion = scanOp.region();
+  auto &scanOpBlock = scanOpRegion.emplaceBlock();
+  scanOpBlock.addArguments({elementType, elementType}, {loc, loc});
+  OpBuilder regionBuilder(scanOpRegion);
+  auto blockArgs = scanOpBlock.getArguments();
+  Value inputElement = blockArgs[0];
+  Value accElement = blockArgs[1];
+  bodyBuild(regionBuilder, loc, inputElement, accElement);
+  return scanOp->getResult(0);
 }
 
 namespace {
@@ -159,7 +184,7 @@ public:
 
     SmallVector<Value, 1> inputSizeDynamic =
         getTensorSizesUntilDim(rewriter, loc, input, 0);
-    Value updatesTensor = rewriter.create<linalg::InitTensorOp>(
+    Value updatesTensor = rewriter.create<tensor::EmptyOp>(
         loc, getAsOpFoldResult(inputSizeDynamic), resultElemType);
 
     Value constantZero = rewriter.create<arith::ConstantOp>(
@@ -190,12 +215,12 @@ public:
 } // namespace
 
 namespace {
-class ConvertValsemVariantAtenIndexPutImplOp
-    : public OpConversionPattern<ValsemVariantAtenIndexPutImplOp> {
+class ConvertAten_IndexPutImplOp
+    : public OpConversionPattern<Aten_IndexPutImplOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
-  matchAndRewrite(ValsemVariantAtenIndexPutImplOp op, OpAdaptor adaptor,
+  matchAndRewrite(Aten_IndexPutImplOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
@@ -416,7 +441,7 @@ public:
         getAsOpFoldResult(getTensorSizes(rewriter, loc, indices));
     updatedIndicesShape.push_back(rewriter.getIndexAttr(tensorOperandRank));
 
-    Value initTensor = rewriter.create<linalg::InitTensorOp>(
+    Value initTensor = rewriter.create<tensor::EmptyOp>(
         loc, updatedIndicesShape, indicesElemType);
 
     Value wIn = inputShape[tensorOperandRank - 1];
@@ -523,6 +548,60 @@ public:
 };
 } // namespace
 
+namespace {
+class ConvertAtenCumsumOp : public OpConversionPattern<AtenCumsumOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenCumsumOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    Value input = adaptor.self();
+    auto resultType = input.getType().cast<RankedTensorType>();
+    Type elementType = resultType.getElementType();
+    int64_t inputRank = resultType.getRank();
+    Location loc = op->getLoc();
+    Value dtype = op.dtype();
+    if (!dtype.getType().isa<Torch::NoneType>())
+      return rewriter.notifyMatchFailure(
+          op, "unsupported: dtype argument not supported");
+
+    int64_t dim;
+    if (!matchPattern(op.dim(), m_TorchConstantInt(&dim)))
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: only constant dim value is supported");
+    dim = toPositiveDim(dim, inputRank);
+    if (!isValidDim(dim, inputRank))
+      return rewriter.notifyMatchFailure(op, "invalid dim");
+
+    SmallVector<Value> sizes = getTensorSizes(rewriter, loc, input);
+    Value output = createZeroInitTensor(rewriter, loc, sizes, elementType);
+    output = rewriter.create<tensor::CastOp>(loc, resultType, output);
+
+    SmallVector<Value> accSizes(sizes);
+    accSizes.erase(accSizes.begin() + dim);
+    SmallVector<int64_t> accStatic(resultType.getShape());
+    accStatic.erase(accStatic.begin() + dim);
+    Value acc = createZeroInitTensor(rewriter, loc, accSizes, elementType);
+    Type accType = RankedTensorType::get(accStatic, elementType);
+    acc = rewriter.create<tensor::CastOp>(loc, accType, acc);
+
+    Value result = createTMTensorScanOp(
+        rewriter, loc, input, output, acc, dim, /*inclusive=*/true,
+        [](OpBuilder &b, Location loc, Value input, Value acc) {
+          Value sum = (input.getType().isa<mlir::FloatType>()
+                           ? b.create<arith::AddFOp>(loc, input, acc)
+                           : b.create<arith::AddIOp>(loc, input, acc))
+                          ->getResult(0);
+          b.create<TMTensor::YieldOp>(loc, sum);
+        });
+
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, result);
+    return success();
+  }
+};
+} // namespace
+
 // -----------------------------------------------------------------------------
 // The pass
 // -----------------------------------------------------------------------------
@@ -535,7 +614,7 @@ public:
     registry.insert<linalg::LinalgDialect>();
     registry.insert<func::FuncDialect>();
     registry.insert<tensor::TensorDialect>();
-    registry.insert<arith::ArithmeticDialect>();
+    registry.insert<arith::ArithDialect>();
     registry.insert<TMTensorDialect>();
     TorchConversion::getBackendTypeConversionDependentDialects(registry);
   }
@@ -544,7 +623,7 @@ public:
     MLIRContext *context = &getContext();
     ConversionTarget target(*context);
     target.addLegalDialect<linalg::LinalgDialect, func::FuncDialect,
-                           tensor::TensorDialect, arith::ArithmeticDialect,
+                           tensor::TensorDialect, arith::ArithDialect,
                            Torch::TorchDialect, TMTensorDialect>();
 
     TypeConverter typeConverter;
@@ -554,12 +633,13 @@ public:
     RewritePatternSet patterns(context);
     target.addIllegalOp<AtenBincountOp>();
     patterns.add<ConvertAtenBincountOp>(typeConverter, context);
-    target.addIllegalOp<ValsemVariantAtenIndexPutImplOp>();
-    patterns.add<ConvertValsemVariantAtenIndexPutImplOp>(typeConverter,
-                                                         context);
+    target.addIllegalOp<Aten_IndexPutImplOp>();
+    patterns.add<ConvertAten_IndexPutImplOp>(typeConverter, context);
     target.addIllegalOp<AtenMaxPool2dWithIndicesBackwardOp>();
     patterns.add<ConvertAtenMaxPool2dWithIndicesBackwardOp>(typeConverter,
                                                             context);
+    target.addIllegalOp<AtenCumsumOp>();
+    patterns.add<ConvertAtenCumsumOp>(typeConverter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))

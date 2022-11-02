@@ -39,22 +39,16 @@ endmacro()
 option(TORCH_MLIR_ENABLE_MHLO "Add mhlo dialect" ON)
 if(TORCH_MLIR_ENABLE_MHLO)
   add_definitions(-DTORCH_MLIR_ENABLE_MHLO)
-  # The i64 calculation is much slower than i32 on some devices, such as Nvidia GPU.
-  # One can truncate from i64 to i32 since dimension sizes are unlikely to exceed
-  # the range of i32(4GiB)
-  option(TORCH_MLIR_ENABLE_MHLO_TRUNC_DIMSIZE_TO_I32 
-	 "Enable truncate dimension size from i64 to i32(unsafely)" OFF)
-  if(TORCH_MLIR_ENABLE_MHLO_TRUNC_DIMSIZE_TO_I32)
-    add_definitions(-DTORCH_MLIR_ENABLE_MHLO_TRUNC_DIMSIZE_TO_I32)
-  endif()
 endif()
 
-option(TORCH_MLIR_ENABLE_LTC "Enables LTC backend" ON)
+option(TORCH_MLIR_ENABLE_LTC "Enables LTC backend" OFF)
 
 if(TORCH_MLIR_ENABLE_LTC)
     set(ENV{TORCH_MLIR_ENABLE_LTC} 1)
+    message(STATUS "LTC Backend build is enabled")
 else()
     set(ENV{TORCH_MLIR_ENABLE_LTC} 0)
+    message(STATUS "LTC Backend build is disabled")
 endif()
 
 torch_mlir_add_llvm_external_project(
@@ -62,7 +56,9 @@ torch_mlir_add_llvm_external_project(
   TORCH_MLIR_DIALECTS
   ${CMAKE_CURRENT_SOURCE_DIR}/externals/llvm-external-projects/torch-mlir-dialects)
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+option(TORCH_MLIR_OUT_OF_TREE_BUILD "Specifies an out of tree build" OFF)
+
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR OR TORCH_MLIR_OUT_OF_TREE_BUILD)
   message(STATUS "Torch-MLIR out-of-tree build.")
   # Out-of-tree build
 

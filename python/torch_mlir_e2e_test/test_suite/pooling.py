@@ -5,9 +5,9 @@
 
 import torch
 
-from torch_mlir_e2e_test.torchscript.framework import TestUtils
-from torch_mlir_e2e_test.torchscript.registry import register_test_case
-from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
+from torch_mlir_e2e_test.framework import TestUtils
+from torch_mlir_e2e_test.registry import register_test_case
+from torch_mlir_e2e_test.annotations import annotate_args, export
 
 # ==============================================================================
 
@@ -121,7 +121,7 @@ class MaxPool2dModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: MaxPool2dModule())
 def MaxPool2dModule_basic(module, tu: TestUtils):
-    module.forward(tu.rand(1, 1, 20, 20) - 0.5)
+    module.forward(tu.rand(1, 1, 20, 20, low=-1))
 
 
 class MaxPool2dStaticModule(torch.nn.Module):
@@ -191,7 +191,7 @@ class MaxPool2dWith3dInputModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: MaxPool2dWith3dInputModule())
 def MaxPool2dWith3dInputModule_basic(module, tu: TestUtils):
-    module.forward(tu.rand(1, 20, 20) - 0.5)
+    module.forward(tu.rand(1, 20, 20, low=-1))
 
 
 # ==============================================================================
@@ -489,7 +489,7 @@ class MaxPool2dWithIndicesBackwardStatic4DModule(torch.nn.Module):
     module_factory=lambda: MaxPool2dWithIndicesBackwardStatic4DModule())
 def MaxPool2dWithIndicesBackwardStatic4DModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(2, 4, 7, 6), tu.rand(2, 4, 6, 5),
-                   torch.randint(16, (2, 4, 7, 6)))
+                   tu.randint(2, 4, 7, 6, high=16))
 
 
 class MaxPool2dWithIndicesBackwardStatic3DModule(torch.nn.Module):
@@ -519,7 +519,7 @@ class MaxPool2dWithIndicesBackwardStatic3DModule(torch.nn.Module):
     module_factory=lambda: MaxPool2dWithIndicesBackwardStatic3DModule())
 def MaxPool2dWithIndicesBackwardStatic3DModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(4, 7, 6), tu.rand(4, 6, 5),
-                   torch.randint(16, (4, 7, 6)))
+                   tu.randint(4, 7, 6, high=16))
 
 
 class MaxPool2dWithIndicesBackwardDynamic4DModule(torch.nn.Module):
@@ -549,7 +549,7 @@ class MaxPool2dWithIndicesBackwardDynamic4DModule(torch.nn.Module):
     module_factory=lambda: MaxPool2dWithIndicesBackwardDynamic4DModule())
 def MaxPool2dWithIndicesBackwardDynamic4DModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(2, 4, 7, 6), tu.rand(2, 4, 6, 5),
-                   torch.randint(16, (2, 4, 7, 6)))
+                   tu.randint(2, 4, 7, 6, high=16))
 
 
 class MaxPool2dWithIndicesBackwardDynamic3DModule(torch.nn.Module):
@@ -579,7 +579,7 @@ class MaxPool2dWithIndicesBackwardDynamic3DModule(torch.nn.Module):
     module_factory=lambda: MaxPool2dWithIndicesBackwardDynamic3DModule())
 def MaxPool2dWithIndicesBackwardDynamic3DModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(2, 7, 6), tu.rand(2, 6, 5),
-                   torch.randint(16, (2, 7, 6)))
+                   tu.randint(2, 7, 6, high=16))
 
 
 # ==============================================================================
@@ -604,11 +604,9 @@ class AvgPool2dFloatModule(torch.nn.Module):
     def forward(self, x):
         return self.ap2d(x)
 
-
 @register_test_case(module_factory=lambda: AvgPool2dFloatModule())
 def AvgPool2dFloatModule_basic(module, tu: TestUtils):
-    module.forward(tu.rand(2, 4, 20, 20) - 0.5)
-
+    module.forward(tu.rand(2, 4, 20, 20, low=-1))
 
 class AvgPool2dIntModule(torch.nn.Module):
 
@@ -632,7 +630,7 @@ class AvgPool2dIntModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: AvgPool2dIntModule())
 def AvgPool2dIntModule_basic(module, tu: TestUtils):
-    module.forward(torch.randint(100, (2, 4, 20, 20)))
+    module.forward(tu.randint(2, 4, 20, 20, high=100))
 
 
 class AvgPool2dStaticModule(torch.nn.Module):
@@ -657,7 +655,7 @@ class AvgPool2dStaticModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: AvgPool2dStaticModule())
 def AvgPool2dStaticModule_basic(module, tu: TestUtils):
-    module.forward(tu.rand(2, 2, 10, 20) - 0.5)
+    module.forward(tu.rand(2, 2, 10, 20, low=-1))
 
 
 class AvgPool2dDivisorOverrideModule(torch.nn.Module):
@@ -682,7 +680,7 @@ class AvgPool2dDivisorOverrideModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: AvgPool2dDivisorOverrideModule())
 def AvgPool2dDivisorOverrideModule_basic(module, tu: TestUtils):
-    module.forward(tu.rand(4, 4, 20, 20) - 0.5)
+    module.forward(tu.rand(4, 4, 20, 20, low=-1))
 
 
 class AvgPool2dCeilModeTrueModule(torch.nn.Module):
@@ -703,7 +701,6 @@ class AvgPool2dCeilModeTrueModule(torch.nn.Module):
     ])
     def forward(self, x):
         return self.ap2d(x)
-
 
 @register_test_case(module_factory=lambda: AvgPool2dCeilModeTrueModule())
 def AvgPool2dCeilModeTrueModule_basic(module, tu: TestUtils):

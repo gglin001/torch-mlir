@@ -5,9 +5,9 @@
 
 import torch
 
-from torch_mlir_e2e_test.torchscript.framework import TestUtils
-from torch_mlir_e2e_test.torchscript.registry import register_test_case
-from torch_mlir_e2e_test.torchscript.annotations import annotate_args, export
+from torch_mlir_e2e_test.framework import TestUtils
+from torch_mlir_e2e_test.registry import register_test_case
+from torch_mlir_e2e_test.annotations import annotate_args, export
 
 # ==============================================================================
 
@@ -30,8 +30,8 @@ class TypePromotionSameCategoryDifferentWidthModule(torch.nn.Module):
     module_factory=lambda: TypePromotionSameCategoryDifferentWidthModule())
 def TypePromotionSameCategoryDifferentWidthModule_basic(module, tu: TestUtils):
     module.forward(
-        torch.randint(10, [4]).type(torch.int32),
-        torch.randint(10, [4]))
+        tu.randint(4, high=10).type(torch.int32),
+        tu.randint(4, high=10))
 
 
 class TypePromotionDifferentCategoryModule(torch.nn.Module):
@@ -51,7 +51,7 @@ class TypePromotionDifferentCategoryModule(torch.nn.Module):
 @register_test_case(
     module_factory=lambda: TypePromotionDifferentCategoryModule())
 def TypePromotionDifferentCategoryModule_basic(module, tu: TestUtils):
-    module.forward(torch.randint(10, [4]), torch.randn(4))
+    module.forward(tu.randint(4, high=10), torch.randn(4))
 
 
 class TypePromotionSameCategoryZeroRankWiderModule(torch.nn.Module):
@@ -91,7 +91,7 @@ class TypePromotionZeroRankHigherCategoryModule(torch.nn.Module):
 @register_test_case(
     module_factory=lambda: TypePromotionZeroRankHigherCategoryModule())
 def TypePromotionZeroRankHigherCategoryModule_basic(module, tu: TestUtils):
-    module.forward(torch.randint(10, [4]), tu.rand())
+    module.forward(tu.randint(4, high=10), tu.rand())
 
 
 class TypePromotionAlphaWiderModule(torch.nn.Module):
@@ -111,5 +111,3 @@ class TypePromotionAlphaWiderModule(torch.nn.Module):
 @register_test_case(module_factory=lambda: TypePromotionAlphaWiderModule())
 def TypePromotionAlphaWiderModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(4), tu.rand())
-
-

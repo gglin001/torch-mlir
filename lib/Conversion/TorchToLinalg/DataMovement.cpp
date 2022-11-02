@@ -16,7 +16,7 @@
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
 #include "Utils.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -231,36 +231,107 @@ public:
   // Helper to find the minimum set of dims to collapse with the
   // same number of elements as that of collapseDim. This function assumes
   // the size of the collapsed dim is never dynamic.
-  static LogicalResult
-  minimallyCollapseDimHelper(AtenViewOp op, ConversionPatternRewriter &rewriter,
-                             int64_t collapseDim, int64_t maxCollapseDim,
-                             int64_t startExpandDim, int64_t maxExpandDim,
-                             const SmallVector<int64_t> &collapseShape,
-                             const SmallVector<int64_t> &expandShape,
-                             ReassociationIndices &expandIndices) {
+  static LogicalResult minimallyCollapseDimHelper(
+      AtenViewOp op, ConversionPatternRewriter &rewriter, int64_t collapseDim,
+      int64_t maxCollapseDim, int64_t startExpandDim, int64_t maxExpandDim,
+      SmallVector<int64_t> &collapseShape, SmallVector<int64_t> &expandShape,
+      ReassociationIndices &collapseIndices,
+      ReassociationIndices &expandIndices) {
+
     int64_t collapseDimSize = collapseShape[collapseDim];
+
     int64_t expandedSize = 1;
+    int64_t collapsedSize = collapseDimSize;
 
-    for (auto i : llvm::seq<int64_t>(startExpandDim, maxExpandDim)) {
-      int64_t expandDimSize = expandShape[i];
-      if (expandDimSize == kUnknownSize ||
-          collapseDimSize % (expandedSize *= expandDimSize)) {
-        return rewriter.notifyMatchFailure(
-            op, "desired size is not compatible with the input tensor size");
-      }
-      expandIndices.push_back(i);
-      if (expandedSize == collapseDimSize)
+    int64_t expandIndex = startExpandDim;
+    int64_t collapseIndex = collapseDim + 1;
+
+    if (collapseDimSize == kUnknownSize) {
+      if (llvm::all_of(collapseShape,
+                       [](int64_t value) { return value == kUnknownSize; }) &&
+          llvm::all_of(expandShape,
+                       [](int64_t value) { return value == kUnknownSize; })) {
+
+        for (size_t i = 0; i < collapseShape.size(); i++) {
+          collapseIndices.push_back(i);
+        }
+
+        for (size_t i = 0; i < expandShape.size(); i++) {
+          expandIndices.push_back(i);
+        }
+
         return success();
-
-      if (expandedSize > collapseDimSize) {
-        return rewriter.notifyMatchFailure(
-            op, "unimplemented: only supports expanding and collapsing "
-                "in view");
       }
     }
 
+    while (expandIndex != maxExpandDim || collapseIndex != maxCollapseDim) {
+      if (expandIndex != maxExpandDim && expandedSize <= collapsedSize) {
+        int64_t expandDimSize = expandShape[expandIndex];
+        if (expandDimSize != kUnknownSize) {
+          expandedSize *= expandDimSize;
+        }
+        expandIndices.push_back(expandIndex);
+        expandIndex++;
+
+      } else if (collapseIndex != maxCollapseDim &&
+                 collapsedSize < expandedSize) {
+        collapseDimSize = collapseShape[collapseIndex];
+        if (collapseDimSize != kUnknownSize) {
+          collapsedSize *= collapseDimSize;
+        }
+        collapseIndices.push_back(collapseIndex);
+        collapseIndex++;
+      }
+
+      if (expandedSize == collapsedSize)
+        return success();
+    }
     return rewriter.notifyMatchFailure(
         op, "total number of elements mismatch in the expansion");
+  }
+
+  static void solveDynamicSize(SmallVector<int64_t> &inputShape,
+                               SmallVector<int64_t> &outputShape) {
+    int64_t inputProduct = 1;
+    int64_t outputProduct = 1;
+
+    int64_t inputDynamicValues = 0;
+    int64_t outputDynamicValues = 0;
+
+    for (int64_t value : inputShape) {
+      if (value == -1) {
+        ++inputDynamicValues;
+      } else {
+        inputProduct *= value;
+      }
+    }
+    for (int64_t value : outputShape) {
+      if (value == -1) {
+        ++outputDynamicValues;
+      } else {
+        outputProduct *= value;
+      }
+    }
+
+    if (inputDynamicValues + outputDynamicValues == 1) {
+      if (inputDynamicValues) {
+        int64_t missingValue = outputProduct / inputProduct;
+        for (size_t i = 0; i < inputShape.size(); i++) {
+          if (inputShape[i] == -1) {
+            inputShape[i] = missingValue;
+            break;
+          }
+        }
+      } else {
+        int64_t missingValue = inputProduct / outputProduct;
+        for (size_t i = 0; i < outputShape.size(); i++) {
+          if (outputShape[i] == -1) {
+            outputShape[i] = missingValue;
+            break;
+          }
+        }
+      }
+    }
   }
 
   LogicalResult
@@ -372,7 +443,6 @@ public:
             "is enough static shape information to determine its size, or when "
             "the input tensor is being flattened to a single dimension");
       }
-
       auto productReduceKnownSizes = [](const ArrayRef<int64_t> sizes) {
         auto knownSizes = llvm::make_filter_range(
             sizes, [](int64_t val) { return val != kUnknownSize; });
@@ -411,6 +481,8 @@ public:
 
     SmallVector<int64_t> inputShapeVec = llvm::to_vector(inputShape);
 
+    solveDynamicSize(inputShapeVec, outputShape);
+
     // The for loop does the following:
     // 1. Attempt to match the indices from inputDim and outputDim to the next
     // boundary found from `torch.aten.size.int(inputTensor, inputDim)`, or
@@ -441,11 +513,13 @@ public:
 
       bool hasDynamic = false;
       while (inputDim < nextUnchangedInput && outputDim < nextUnchangedOutput) {
+
         inputAssociations.emplace_back();
         outputAssociations.emplace_back();
 
         // outputDim is next to the boundary
         if (outputDim == nextUnchangedOutput - 1) {
+
           if (hasDynamic && inputDim != nextUnchangedInput - 1) {
             return rewriter.notifyMatchFailure(
                 op, "found ambiguous collapse of dynamic input sizes (e.g. "
@@ -464,6 +538,7 @@ public:
 
         // inputDim is next to the boundary
         if (inputDim == nextUnchangedInput - 1) {
+
           if (hasDynamic && inputShape[inputDim] == kUnknownSize) {
             return rewriter.notifyMatchFailure(
                 op, "found ambiguous expand of dynamic sizes (e.g. [-1, -1] -> "
@@ -475,6 +550,7 @@ public:
                   nextUnchangedOutput, inputShapeVec, outputShape,
                   outputAssociations.back())))
             return failure();
+
           outputDim = nextUnchangedOutput;
           inputDim = nextUnchangedInput;
           continue;
@@ -485,6 +561,7 @@ public:
 
         // If the input is dynamic, first assume it is not split
         if (inputMatchingDimSize == kUnknownSize) {
+
           checkDimEqualHelper(rewriter, loc, inputShapeInt[inputDim],
                               outputShapeInt[outputDim]);
           outputShape[outputDim] = kUnknownSize;
@@ -496,15 +573,17 @@ public:
 
         // inputDim size is larger; try to collapse onto it
         if (inputMatchingDimSize >= outputMatchingDimSize) {
+
           inputAssociations.back().push_back(inputDim);
           if (failed(minimallyCollapseDimHelper(
                   op, rewriter, inputDim, nextUnchangedInput, outputDim,
                   nextUnchangedOutput, inputShapeVec, outputShape,
-                  outputAssociations.back())))
+                  inputAssociations.back(), outputAssociations.back()))) {
             return failure();
+          }
           hasDynamic = false;
           outputDim = outputAssociations.back().back() + 1;
-          inputDim++;
+          inputDim = inputAssociations.back().back() + 1;
           continue;
         }
 
@@ -513,18 +592,25 @@ public:
         if (failed(minimallyCollapseDimHelper(
                 op, rewriter, outputDim, nextUnchangedOutput, inputDim,
                 nextUnchangedInput, outputShape, inputShapeVec,
-                inputAssociations.back())))
+                outputAssociations.back(), inputAssociations.back()))) {
+
           return failure();
+        }
         hasDynamic = false;
         inputDim = inputAssociations.back().back() + 1;
-        outputDim++;
+        outputDim = outputAssociations.back().back() + 1;
         continue;
       }
 
-      if (inputDim != nextUnchangedInput || outputDim != nextUnchangedOutput) {
-        return rewriter.notifyMatchFailure(
-            op, "could not match input tensor shape to output shape; "
-                "potentially unsupported view shape");
+      if (inputDim != nextUnchangedInput) {
+        hasDynamic = true;
+        if (inputAssociations.size() < 1) {
+          inputAssociations.emplace_back();
+          outputAssociations.emplace_back();
+        }
+        inputAssociations.back().push_back(inputDim++);
+        outputAssociations.back().push_back(outputDim++);
+        continue;
       }
 
       // Append the associations for the dims matching `aten.size.int`
@@ -547,6 +633,7 @@ public:
           return indices.size() == 1;
         })) {
       rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, input);
+
       return success();
     }
 
@@ -562,16 +649,25 @@ public:
     if (llvm::any_of(inputAssociations, [](ReassociationIndices indices) {
           return indices.size() > 1;
         })) {
+
       SmallVector<int64_t> intermediateShape;
-      for (auto i : llvm::seq(0, (int)inputAssociations.size())) {
-        if (inputAssociations[i].size() > 1) {
-          intermediateShape.push_back(outputShape[outputAssociations[i][0]]);
-        } else {
-          intermediateShape.push_back(inputShapeVec[inputAssociations[i][0]]);
+      for (auto i : llvm::seq(0, (int)outputAssociations.size())) {
+        int sum = 1;
+
+        for (auto j : llvm::seq(0, (int)outputAssociations[i].size())) {
+          if (outputShape[outputAssociations[i][j]] < 0) {
+            sum = kUnknownSize;
+            break;
+          }
+          sum *= outputShape[outputAssociations[i][j]];
         }
+
+        intermediateShape.push_back(sum);
       }
+
       Type intermediateResultType =
           RankedTensorType::get(intermediateShape, resultType.getElementType());
+
       expandedInput =
           rewriter
               .create<tensor::CollapseShapeOp>(loc, intermediateResultType,
@@ -582,6 +678,7 @@ public:
     if (llvm::any_of(outputAssociations, [](ReassociationIndices indices) {
           return indices.size() > 1;
         })) {
+
       collapsedInput = rewriter
                            .create<tensor::ExpandShapeOp>(
                                loc, adjustedResultType,
@@ -593,7 +690,9 @@ public:
 
     Value result = collapsedInput.has_value() ? collapsedInput.value()
                                               : expandedInput.value();
+
     rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, result);
+
     return success();
   }
 };
@@ -849,8 +948,8 @@ public:
       outputDims.push_back(getDimOp(rewriter, loc, adaptor.self(), i));
     std::swap(outputDims[dim0], outputDims[dim1]);
 
-    Value outVector =
-        rewriter.create<linalg::InitTensorOp>(loc, outputDims, elementType);
+    Value outVector = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(outputDims), elementType);
     SmallVector<AffineExpr> idExprs;
     SmallVector<AffineExpr> swapExprs;
     for (auto i = 0; i < inputRank; i++)
@@ -922,8 +1021,8 @@ public:
     for (unsigned i = 0; i < inputRank; i++)
       outputDims.push_back(getDimOp(rewriter, loc, inVector, dimensions[i]));
 
-    Value outVector =
-        rewriter.create<linalg::InitTensorOp>(loc, outputDims, elementType);
+    Value outVector = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(outputDims), elementType);
     SmallVector<AffineExpr> idExprs;
     SmallVector<AffineExpr> swapExprs;
     for (unsigned i = 0; i < inputRank; i++)
@@ -1048,8 +1147,8 @@ public:
       return op.getValue();
     };
 
-    Value result = rewriter.create<linalg::InitTensorOp>(
-        loc, sizes, newResultType.getElementType());
+    Value result = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(sizes), newResultType.getElementType());
     for (auto tensor : tensors) {
       SmallVector<Value> sizes = getTensorSizes(rewriter, loc, tensor);
       result = rewriter.createOrFold<tensor::InsertSliceOp>(
@@ -1120,12 +1219,11 @@ public:
 } // namespace
 
 namespace {
-class ConvertValsemVariantAtenCopyOp
-    : public OpConversionPattern<ValsemVariantAtenCopyOp> {
+class ConvertAtenCopyOp : public OpConversionPattern<AtenCopyOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
-  matchAndRewrite(ValsemVariantAtenCopyOp op, OpAdaptor adaptor,
+  matchAndRewrite(AtenCopyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
 
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
@@ -1263,8 +1361,8 @@ void mlir::torch::torch_to_linalg::populateDataMovementPatternsAndLegality(
   patterns.add<ConvertAtenBroadcastToOp>(typeConverter, context);
   target.addIllegalOp<AtenContiguousOp>();
   patterns.add<ConvertAtenContiguousOp>(typeConverter, context);
-  target.addIllegalOp<ValsemVariantAtenCopyOp>();
-  patterns.add<ConvertValsemVariantAtenCopyOp>(typeConverter, context);
+  target.addIllegalOp<AtenCopyOp>();
+  patterns.add<ConvertAtenCopyOp>(typeConverter, context);
   target.addIllegalOp<AtenSliceScatterOp>();
   patterns.add<ConvertAtenSliceScatterOp>(typeConverter, context);
 }

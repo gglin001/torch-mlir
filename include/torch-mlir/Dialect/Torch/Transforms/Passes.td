@@ -118,7 +118,7 @@ def AdjustCallingConventions
 
     The transformations performed are:
     - `torch.type_bound` annotations are incorporated into the type of the
-      function arguments, which should be `!numpy.ndarray<...>`'s.
+      function arguments, which should be `!torch.tensor<...>`'s.
     - Python-isms are rewritten to MLIR-isms
       - NoneType return is rewritten to the absence of a return value.
       - Tuple return is rewritten to multiple return values.
@@ -327,6 +327,18 @@ def LowerToBackendContract
   // TODO: Debug why this is needed, even though the input program has func.func
   // ops in it.
   let dependentDialects = ["func::FuncDialect"];
+}
+
+def VerifyBackendContract
+    : Pass<"torch-verify-backend-contract", "ModuleOp"> {
+  let summary = "Check that program satisfies backend contract.";
+  let constructor =
+    "mlir::torch::Torch::createVerifyBackendContractPass()";
+  let description = [{
+    This pass performs a set of inspections to check that program satisfies backend
+    contract. In case of check failure it prints out the error message and returns
+    `signalPassFailure()` status.
+  }];
 }
 
 #endif // TORCHMLIR_TORCH_PASSES

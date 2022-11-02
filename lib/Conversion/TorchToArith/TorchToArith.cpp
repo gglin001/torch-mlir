@@ -10,12 +10,13 @@
 #include "torch-mlir/Conversion/TorchToArith/TorchToArith.h"
 
 #include "../PassDetail.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Traits.h"
+#include "mlir/IR/DialectResourceBlobManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
@@ -121,6 +122,25 @@ public:
 } // namespace
 
 namespace {
+class ConvertAtenDivIntOp : public OpConversionPattern<AtenDivIntOp> {
+public:
+  using OpConversionPattern<AtenDivIntOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenDivIntOp op,
+                  typename OpConversionPattern<AtenDivIntOp>::OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value a =
+        convertScalarToDtype(rewriter, loc, adaptor.a(), rewriter.getF64Type());
+    Value b =
+        convertScalarToDtype(rewriter, loc, adaptor.b(), rewriter.getF64Type());
+    rewriter.replaceOpWithNewOp<arith::DivFOp>(op, a, b);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 // Lowers aten integer comparison ops.
 template <typename AtenOp, arith::CmpIPredicate Pred>
 class ConvertAtenIntComparisonOp : public OpConversionPattern<AtenOp> {
@@ -178,15 +198,17 @@ public:
           }));
       return success();
     }
-    if (auto elements = op.valueAttr().dyn_cast<SparseElementsAttr>()) {
+    if (auto elements = op.valueAttr().dyn_cast<DenseResourceElementsAttr>()) {
       if (auto type = elements.getType().dyn_cast<RankedTensorType>()) {
         if (auto intType = type.getElementType().dyn_cast<IntegerType>()) {
           Type builtinTensorElemTy =
               IntegerType::get(context, intType.getIntOrFloatBitWidth());
           auto shapedType =
               RankedTensorType::get(type.getShape(), builtinTensorElemTy);
+          AsmResourceBlob *blob = elements.getRawHandle().getBlob();
+          assert(blob && "Expecting dense resource with a valid blob");
           rewriter.replaceOpWithNewOp<arith::ConstantOp>(
-              op, DenseElementsAttr::get(shapedType, elements.getValues()));
+              op, DenseElementsAttr::get(shapedType, blob->getData()));
           return success();
         }
       }
@@ -297,7 +319,7 @@ class ConvertTorchToArith : public ConvertTorchToArithBase<ConvertTorchToArith> 
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<func::FuncDialect>();
-    registry.insert<arith::ArithmeticDialect>();
+    registry.insert<arith::ArithDialect>();
     registry.insert<tensor::TensorDialect>();
     registry.insert<cf::ControlFlowDialect>();
     registry.insert<math::MathDialect>();
@@ -308,7 +330,7 @@ public:
     MLIRContext *context = &getContext();
     ConversionTarget target(*context);
     target.addLegalDialect<Torch::TorchDialect, func::FuncDialect,
-                           arith::ArithmeticDialect, tensor::TensorDialect,
+                           arith::ArithDialect, tensor::TensorDialect,
                            cf::ControlFlowDialect, math::MathDialect>();
 
     TypeConverter typeConverter;
@@ -371,6 +393,8 @@ public:
     target.addIllegalOp<AtenSubFloatOp>();
     patterns.add<ConvertAtenBinaryOp<AtenSubFloatOp, arith::SubFOp>>(
         typeConverter, context);
+    target.addIllegalOp<AtenDivIntOp>();
+    patterns.add<ConvertAtenDivIntOp>(typeConverter, context);
     target.addIllegalOp<AtenDivFloatOp>();
     patterns.add<ConvertAtenBinaryOp<AtenDivFloatOp, arith::DivFOp>>(
         typeConverter, context);
