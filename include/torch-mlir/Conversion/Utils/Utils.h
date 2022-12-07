@@ -49,6 +49,10 @@ SmallVector<Value>
 castIntVectorToIndexVector(OpBuilder &b, Location loc,
                            SmallVectorImpl<Value> &intValues);
 
+SmallVector<Value>
+castIndexVectorToInt64Vector(OpBuilder &b, Location loc,
+                             SmallVectorImpl<Value> &indexValues);
+
 Value getDimOp(OpBuilder &b, Location loc, Value v, int dim);
 
 SmallVector<Value> getTensorSizesUntilDim(OpBuilder &b, Location loc,
@@ -80,12 +84,14 @@ SmallVector<Value> getTypeConvertedValues(OpBuilder &b, Location loc,
 // should be converted builtin types.
 Value convertScalarToDtype(
     OpBuilder &b, Location loc, Value scalar, Type dtype,
-    llvm::Optional<Type> srcOriginalDtype = llvm::NoneType());
+    llvm::Optional<Type> srcOriginalDtype = llvm::None);
 
 // Return the number of elements of a tensor if the shape is static; otherwise,
 // return -1.
 int64_t getNumberOfElements(RankedTensorType inputType);
 
+SmallVector<int64_t> makeShapeLLVMCompatible(ArrayRef<int64_t> shape);
+SmallVector<int64_t> makeShapeTorchCompatible(ArrayRef<int64_t> shape);
 } // namespace Torch
 } // namespace torch
 } // namespace mlir

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 # Also available under a BSD-style license. See LICENSE.
 
+import functorch
 import torch
 
 from torch_mlir_e2e_test.framework import TestUtils
@@ -1465,7 +1466,7 @@ class DropoutTrainModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: DropoutTrainModule())
 def DropoutTrainModule_basic(module, tu: TestUtils):
-    module.forward(tu.rand(256, 256))
+    module.forward(tu.rand(1024, 1536))
 
 
 # ==============================================================================
@@ -1482,7 +1483,7 @@ class NumelModule(torch.nn.Module):
         ([-1, -1, -1], torch.float32, True),
     ])
     def forward(self, input):
-        return torch.numel(input)
+        return torch.ops.aten.numel(input)
 
 
 @register_test_case(module_factory=lambda: NumelModule())
@@ -1504,7 +1505,7 @@ class NumelZeroRankModule(torch.nn.Module):
         ([], torch.int64, True),
     ])
     def forward(self, input):
-        return torch.numel(input)
+        return torch.ops.aten.numel(input)
 
 
 @register_test_case(module_factory=lambda: NumelZeroRankModule())
@@ -3009,16 +3010,92 @@ def AtenToDeviceModule_basic(module, tu: TestUtils):
 
 # ==============================================================================
 
-class SingleTensorTupleReturn(torch.nn.Module):
+
+class UpSampleNearest2dBackward(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
 
     @export
     @annotate_args([
         None,
-        ([-1 , -1], torch.float32, True),
+        ([-1, -1, -1, -1], torch.float64, True),
     ])
-    def forward(self, x):
-        return (x,)
+    def forward(self, input):
+        return torch.ops.aten.upsample_nearest2d_backward(input,
+                                               output_size=[6, 12],
+                                               input_size=[1, 1, 2, 3],
+                                               scales_h=3.0,
+                                               scales_w=4.0)
 
-@register_test_case(module_factory=lambda: SingleTensorTupleReturn())
-def SingleTensorTupleReturn_basic(module, tu: TestUtils):
-    module.forward(torch.randn(2, 4))
+
+@register_test_case(module_factory=lambda: UpSampleNearest2dBackward())
+def UpSampleNearest2dBackward_basic(module, tu: TestUtils):
+    module.forward(tu.rand(1, 1, 6, 12).to(torch.float64))
+
+
+class UpSampleNearest2dBackwardScalesNone(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, -1], torch.float32, True),
+    ])
+    def forward(self, input):
+        return torch.ops.aten.upsample_nearest2d_backward(input,
+                                               output_size=[4, 8],
+                                               input_size=[1, 1, 2, 3],
+                                               scales_h=None,
+                                               scales_w=None)
+
+@register_test_case(module_factory=lambda: UpSampleNearest2dBackwardScalesNone())
+def UpSampleNearest2dBackwardScalesNone_basic(module, tu: TestUtils):
+    module.forward(tu.rand(1, 1, 4, 8))
+
+
+# ==============================================================================
+
+
+class SortIntList(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+    ])
+    def forward(self):
+        a = [1, 0, 3, 2]
+        b = [0, 1, 2, 3]
+        a.sort()
+        return a == b
+
+
+@register_test_case(module_factory=lambda: SortIntList())
+def SortIntList_basic(module, tu: TestUtils):
+    module.forward()
+
+
+class SortIntListReverse(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+    ])
+    def forward(self):
+        a = [1, 0, 3, 2]
+        b = [3, 2, 1, 0]
+        a.sort(reverse=True)
+        return a == b
+
+
+@register_test_case(module_factory=lambda: SortIntListReverse())
+def SortIntListReverse_basic(module, tu: TestUtils):
+    module.forward()

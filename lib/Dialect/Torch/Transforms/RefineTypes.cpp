@@ -646,7 +646,8 @@ static Type getPromotedResultTypeAssumingNonZeroRank(
 
 void TypeAnalysis::fillInDTypeGivenDTypeIntAndInputDType(
     ValueKnowledge &knowledge, Value dtype, Type inputDType) {
-  assert(isBuiltInType(inputDType) && "`inputDType` must be a builtin type");
+  assert(!inputDType ||
+         isBuiltInType(inputDType) && "`inputDType` must be a builtin type");
   int64_t dtypeInt;
   if (dtype.getType().isa<Torch::NoneType>())
     knowledge.dtype = inputDType;
@@ -700,12 +701,12 @@ void TypeAnalysis::visitOperation(Operation *op,
           AtenMaskedFillScalarOp, AtenFlipOp, PrimAbsScalarOp, AtenNumpyTOp,
           AtenTriuOp, AtenMaskedFillTensorOp, AtenRollOp, AtenPowTensorTensorOp,
           AtenLiftFreshCopyOp, AtenIndexTensorHackedTwinOp,
-          AtenUpsampleNearest2dVecOp, AtenMishOp, AtenRoundOp,
-          AtenFillTensorOp>(op)) {
+          AtenUpsampleNearest2dOp, AtenMishOp, AtenRoundOp, AtenFillTensorOp,
+          AtenUpsampleNearest2dBackwardOp>(op)) {
     return incorporateKnowledge(op->getResult(0), operands[0]->getValue());
   }
 
-  // Dtype is always float32, except for bfloat16, float64 and nullptr.
+  // Dtype is always float32, except for bfloat16, float16, float64 and nullptr.
   if (isa<AtenTanhOp, AtenExpOp, AtenExpm1Op, AtenSinOp, AtenCosOp,
           AtenSigmoidOp, AtenReciprocalOp, AtenLogOp, AtenSqrtOp, AtenLog2Op,
           AtenLog1pOp, AtenRsqrtOp, AtenErfOp, AtenSoftplusOp, AtenFrobeniusNormDimOp>(op)) {
@@ -714,7 +715,7 @@ void TypeAnalysis::visitOperation(Operation *op,
     Type dtype = operands[0]->getValue().dtype;
     if (dtype) {
       knowledge.dtype = Float32Type::get(op->getContext());
-      if (dtype.isa<BFloat16Type, Float64Type>())
+      if (dtype.isa<BFloat16Type, Float16Type, Float64Type>())
         knowledge.dtype = dtype;
     }
     incorporateKnowledge(op->getResult(0), knowledge);
@@ -885,7 +886,9 @@ void TypeAnalysis::visitOperation(Operation *op,
   }
 
   // 3 results take dtype from first operand.
-  if (isa<AtenNativeLayerNormOp, AtenNativeBatchNormOp>(op)) {
+  if (isa<AtenNativeLayerNormOp, AtenNativeBatchNormOp,
+          AtenConvolutionBackwardOp, AtenConvolutionBackwardOverrideableOp>(
+          op)) {
     auto self = operands[0]->getValue();
     auto result0Knowledge =
         ValueKnowledge::getTensorPessimisticValueState(op->getContext());
@@ -944,6 +947,12 @@ void TypeAnalysis::visitOperation(Operation *op,
   }
   if (auto sumDimIntList = dyn_cast<AtenSumDimIntListOp>(op)) {
     Type defaultDtype = operands[0]->getValue().dtype;
+    if (!defaultDtype) {
+      incorporateKnowledge(
+          sumDimIntList.getResult(),
+          ValueKnowledge::getTensorPessimisticValueState(op->getContext()));
+      return;
+    }
     // If the input dtype is bool, the result type should be i64.
     if (defaultDtype.isInteger(1))
       defaultDtype =
@@ -997,9 +1006,9 @@ void TypeAnalysis::visitOperation(Operation *op,
         getDtypeOrDefault(mean.getContext(), mean.dtype(), defaultDtype);
     visitReductionAlongAllDimsOp(mean, dtype, operands);
     return;
-  } else if (auto max = dyn_cast<AtenMaxOp>(op)) {
+  } else if (isa<AtenMaxOp, AtenAmaxOp>(op)) {
     Type dtype = operands[0]->getValue().dtype;
-    visitReductionAlongAllDimsOp(max, dtype, operands);
+    visitReductionAlongAllDimsOp(op, dtype, operands);
     return;
   } else if (isa<AtenStdOp, AtenStdDimOp, AtenVarOp, AtenVarDimOp,
                  AtenVarCorrectionOp>(op)) {
@@ -1069,6 +1078,12 @@ void TypeAnalysis::visitOperation(Operation *op,
 
   if (auto toDtype = dyn_cast<AtenToDtypeOp>(op)) {
     visitAtenToDtypeLikeOp<AtenToDtypeOp>(toDtype, operands);
+    return;
+  }
+
+  if (auto primsConvertElementType = dyn_cast<PrimsConvertElementTypeOp>(op)) {
+    visitAtenToDtypeLikeOp<PrimsConvertElementTypeOp>(primsConvertElementType,
+                                                      operands);
     return;
   }
 
@@ -1153,6 +1168,47 @@ void TypeAnalysis::visitOperation(Operation *op,
                                    defaultDtype);
     visitReductionAlongDimIntListOp(vectorNorm, vectorNorm.dim(),
                                     vectorNorm.keepdim(), dtype, operands);
+    return;
+  }
+
+  if (auto randIntLow = dyn_cast<AtenRandintLowOp>(op)) {
+    auto knowledge =
+        ValueKnowledge::getTensorPessimisticValueState(op->getContext());
+    Type defaultDtype =
+        IntegerType::get(op->getContext(), 64, IntegerType::Signed);
+    knowledge.dtype =
+        getDtypeOrDefault(op->getContext(), randIntLow.dtype(), defaultDtype);
+    incorporateKnowledge(randIntLow.getResult(), knowledge);
+    return;
+  }
+
+  if (isa<AtenVarMeanCorrectionOp>(op)) {
+    auto input = operands[0]->getValue();
+    auto knowledge =
+        ValueKnowledge::getTensorPessimisticValueState(op->getContext());
+    knowledge.dtype = input.dtype;
+    incorporateKnowledge(op->getResult(0), knowledge);
+    incorporateKnowledge(op->getResult(1), knowledge);
+    return;
+  }
+
+  if (auto randn = dyn_cast<AtenRandnOp>(op)) {
+    auto knowledge =
+        ValueKnowledge::getTensorPessimisticValueState(op->getContext());
+    Type defaultDtype = Float32Type::get(op->getContext());
+    knowledge.dtype =
+        getDtypeOrDefault(op->getContext(), randn.dtype(), defaultDtype);
+    incorporateKnowledge(randn.getResult(), knowledge);
+    return;
+  }
+
+  if (auto randnGenerator = dyn_cast<AtenRandnGeneratorOp>(op)) {
+    auto knowledge =
+        ValueKnowledge::getTensorPessimisticValueState(op->getContext());
+    Type defaultDtype = Float32Type::get(op->getContext());
+    knowledge.dtype = getDtypeOrDefault(op->getContext(),
+                                        randnGenerator.dtype(), defaultDtype);
+    incorporateKnowledge(randnGenerator.getResult(), knowledge);
     return;
   }
 

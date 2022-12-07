@@ -2,7 +2,6 @@
 
 pyyaml
 numpy
-torchvision
 
 # # Build requirements.
 # pybind11

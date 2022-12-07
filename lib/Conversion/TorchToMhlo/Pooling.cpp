@@ -12,7 +12,7 @@
 #include "../PassDetail.h"
 #include "./MhloLegalizeUtils.h"
 #include "./PopulatePatterns.h"
-#include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mhlo/IR/hlo_ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -93,18 +93,19 @@ LogicalResult ConvertAtenOp<AtenMaxPool2dOp>::matchAndRewrite(
   SmallVector<int64_t, 2> padding, kernelSize, stride, dilation;
   bool ceilMode = false;
 
-  if (!(matchPattern(op.kernel_size(), m_TorchConstantIntList(kernelSize)))) {
+  if (!(matchPattern(op.kernel_size(),
+                     m_TorchListOfConstantInts(kernelSize)))) {
     return rewriter.notifyMatchFailure(
         op, "non-const int kernel size unsupported!");
   }
-  if (!(matchPattern(op.stride(), m_TorchConstantIntList(stride)))) {
+  if (!(matchPattern(op.stride(), m_TorchListOfConstantInts(stride)))) {
     return rewriter.notifyMatchFailure(op, "non-const int stride unsupported!");
   }
-  if (!(matchPattern(op.padding(), m_TorchConstantIntList(padding)))) {
+  if (!(matchPattern(op.padding(), m_TorchListOfConstantInts(padding)))) {
     return rewriter.notifyMatchFailure(op,
                                        "non-const int padding unsupported!");
   }
-  if (!(matchPattern(op.dilation(), m_TorchConstantIntList(dilation)))) {
+  if (!(matchPattern(op.dilation(), m_TorchListOfConstantInts(dilation)))) {
     return rewriter.notifyMatchFailure(op,
                                        "non-const int dilation unsupported!");
   }
@@ -197,18 +198,19 @@ LogicalResult ConvertAtenOp<AtenMaxPool2dWithIndicesOp>::matchAndRewrite(
   SmallVector<int64_t, 2> padding, kernelSize, stride, dilation;
   bool ceilMode = false;
 
-  if (!(matchPattern(op.kernel_size(), m_TorchConstantIntList(kernelSize)))) {
+  if (!(matchPattern(op.kernel_size(),
+                     m_TorchListOfConstantInts(kernelSize)))) {
     return rewriter.notifyMatchFailure(
         op, "non-const int kernel size unsupported!");
   }
-  if (!(matchPattern(op.stride(), m_TorchConstantIntList(stride)))) {
+  if (!(matchPattern(op.stride(), m_TorchListOfConstantInts(stride)))) {
     return rewriter.notifyMatchFailure(op, "non-const int stride unsupported!");
   }
-  if (!(matchPattern(op.padding(), m_TorchConstantIntList(padding)))) {
+  if (!(matchPattern(op.padding(), m_TorchListOfConstantInts(padding)))) {
     return rewriter.notifyMatchFailure(op,
                                        "non-const int padding unsupported!");
   }
-  if (!(matchPattern(op.dilation(), m_TorchConstantIntList(dilation)))) {
+  if (!(matchPattern(op.dilation(), m_TorchListOfConstantInts(dilation)))) {
     return rewriter.notifyMatchFailure(op,
                                        "non-const int dilation unsupported!");
   }
@@ -277,9 +279,9 @@ LogicalResult ConvertAtenOp<AtenMaxPool2dWithIndicesOp>::matchAndRewrite(
 
   SmallVector<int64_t> initIndexShapeForType(inputShape.begin(),
                                              inputShape.end() - 2);
-  if (inputShape[inputRank - 1] == ShapedType::kDynamicSize ||
-      inputShape[inputRank - 2] == ShapedType::kDynamicSize) {
-    initIndexShapeForType.push_back(ShapedType::kDynamicSize);
+  if (inputShape[inputRank - 1] == ShapedType::kDynamic ||
+      inputShape[inputRank - 2] == ShapedType::kDynamic) {
+    initIndexShapeForType.push_back(ShapedType::kDynamic);
   } else {
     initIndexShapeForType.push_back(inputShape[inputRank - 1] *
                                     inputShape[inputRank - 2]);
@@ -389,14 +391,15 @@ LogicalResult ConvertAtenOp<AtenAvgPool2dOp>::matchAndRewrite(
   bool ceilMode = false;
   bool countIncludePad = true;
 
-  if (!(matchPattern(op.kernel_size(), m_TorchConstantIntList(kernelSize)))) {
+  if (!(matchPattern(op.kernel_size(),
+                     m_TorchListOfConstantInts(kernelSize)))) {
     return rewriter.notifyMatchFailure(
         op, "non-const int kernel size unsupported!");
   }
-  if (!(matchPattern(op.stride(), m_TorchConstantIntList(stride)))) {
+  if (!(matchPattern(op.stride(), m_TorchListOfConstantInts(stride)))) {
     return rewriter.notifyMatchFailure(op, "non-const int stride unsupported!");
   }
-  if (!(matchPattern(op.padding(), m_TorchConstantIntList(padding)))) {
+  if (!(matchPattern(op.padding(), m_TorchListOfConstantInts(padding)))) {
     return rewriter.notifyMatchFailure(op,
                                        "non-const int padding unsupported!");
   }
@@ -498,7 +501,7 @@ LogicalResult ConvertAtenOp<AtenAvgPool2dOp>::matchAndRewrite(
       op->getLoc(),
       RankedTensorType::get(inputTy.getShape(), outTy.getElementType()),
       windowSizeConst, inputShapeTensor, rewriter.getI64TensorAttr({}));
-  
+
   Value zero = createInitialValueForAtenPoolingOp(op, inputElemTy, rewriter);
   auto reduceWindowSize = rewriter.create<mhlo::ReduceWindowOp>(
       op->getLoc(), RankedTensorType::get(outShape, inputElemTy),

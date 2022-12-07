@@ -151,7 +151,7 @@ function run_in_docker() {
         torch-mlir)
           clean_wheels torch_mlir "$python_version"
           build_torch_mlir
-          #run_audit_wheel torch_mlir "$python_version"
+          run_audit_wheel torch_mlir "$python_version"
           clean_build torch_mlir "$python_version"
           ;;
         out-of-tree)
@@ -265,11 +265,17 @@ function test_in_tree() {
   echo ":::: Run eager_mode e2e integration tests"
   python -m e2e_testing.main --config=eager_mode -v
 
+  echo ":::: Run MHLO e2e integration tests"
+  python -m e2e_testing.main --config=mhlo -v
+
   echo ":::: Run TOSA e2e integration tests"
   python -m e2e_testing.main --config=tosa -v
 
   echo ":::: Run Lazy Tensor Core e2e integration tests"
   python -m e2e_testing.main --config=lazy_tensor_core -v
+
+  echo ":::: Run TorchDynamo e2e integration tests"
+  python -m e2e_testing.main --config=torchdynamo -v
 }
 
 function setup_venv() {
@@ -279,8 +285,8 @@ function setup_venv() {
   source /main_checkout/torch-mlir/docker_venv/bin/activate
 
   echo ":::: pip installing dependencies"
-  python3 -m pip install --upgrade -r /main_checkout/torch-mlir/externals/llvm-project/mlir/python/requirements.txt
-  python3 -m pip install --upgrade -r /main_checkout/torch-mlir/requirements.txt
+  python3 -m pip install --no-cache-dir -r /main_checkout/torch-mlir/externals/llvm-project/mlir/python/requirements.txt
+  python3 -m pip install --no-cache-dir -r /main_checkout/torch-mlir/requirements.txt
 
 }
 
@@ -347,7 +353,7 @@ function clean_build() {
 }
 
 function build_torch_mlir() {
-  python -m pip install --upgrade -r /main_checkout/torch-mlir/requirements.txt \
+  python -m pip install --no-cache-dir -r /main_checkout/torch-mlir/requirements.txt \
     --extra-index-url https://download.pytorch.org/whl/nightly/cpu/torch_nightly.html
   CMAKE_GENERATOR=Ninja \
   TORCH_MLIR_PYTHON_PACKAGE_VERSION=${TORCH_MLIR_PYTHON_PACKAGE_VERSION} \
@@ -359,7 +365,7 @@ function build_torch_mlir() {
 function run_audit_wheel() {
   local wheel_basename="$1"
   local python_version="$2"
-  generic_wheel="/wheelhouse/${wheel_basename}-*-${python_version}-linux_x86_64.whl"
+  generic_wheel="/wheelhouse/${wheel_basename}-${TORCH_MLIR_PYTHON_PACKAGE_VERSION}-${python_version}-linux_x86_64.whl"
   echo ":::: Auditwheel $generic_wheel"
   auditwheel repair -w /wheelhouse "$generic_wheel"
   rm "$generic_wheel"

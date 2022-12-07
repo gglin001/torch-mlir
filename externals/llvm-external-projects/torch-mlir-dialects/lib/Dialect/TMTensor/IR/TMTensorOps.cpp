@@ -120,8 +120,8 @@ LogicalResult ScanOp::verify() {
   }
   if (llvm::any_of(llvm::zip(expectedAccumulatorShape, accumulatorShape),
                    [](std::tuple<int64_t, int64_t> s) {
-                     return std::get<0>(s) != ShapedType::kDynamicSize &&
-                            std::get<1>(s) != ShapedType::kDynamicSize &&
+                     return std::get<0>(s) != ShapedType::kDynamic &&
+                            std::get<1>(s) != ShapedType::kDynamic &&
                             std::get<0>(s) != std::get<1>(s);
                    })) {
     return emitOpError("incompatible input/accumulator shapes");
@@ -134,8 +134,8 @@ LogicalResult ScanOp::verify() {
   }
   if (llvm::any_of(llvm::zip(inputShapes, outputShapes),
                    [](std::tuple<int64_t, int64_t> s) {
-                     return std::get<0>(s) != ShapedType::kDynamicSize &&
-                            std::get<1>(s) != ShapedType::kDynamicSize &&
+                     return std::get<0>(s) != ShapedType::kDynamic &&
+                            std::get<1>(s) != ShapedType::kDynamic &&
                             std::get<0>(s) != std::get<1>(s);
                    })) {
     return emitOpError("incompatible input/output shapes");
@@ -158,10 +158,10 @@ SmallVector<Range> ScanOp::getIterationDomain(OpBuilder &builder) {
   return loopBounds;
 }
 
-SmallVector<StringRef> ScanOp::getLoopIteratorTypes() {
-  SmallVector<StringRef> iteratorTypes(getOperandRank(),
-                                       getParallelIteratorTypeName());
-  iteratorTypes[dimension()] = getReductionIteratorTypeName();
+SmallVector<utils::IteratorType> ScanOp::getLoopIteratorTypes() {
+  SmallVector<utils::IteratorType> iteratorTypes(getOperandRank(),
+                                                 utils::IteratorType::parallel);
+  iteratorTypes[dimension()] = utils::IteratorType::reduction;
   return iteratorTypes;
 }
 
@@ -291,7 +291,7 @@ LogicalResult ScatterOp::verify() {
     return emitOpError("expected indices to be of rank 2 of i32 element type");
   }
   auto indexDepth = getIndexDepth();
-  if (indexDepth == ShapedType::kDynamicSize) {
+  if (indexDepth == ShapedType::kDynamic) {
     return emitOpError("expected index depth is static");
   }
 
@@ -387,11 +387,11 @@ LogicalResult ScatterOp::verify() {
   return success();
 }
 
-SmallVector<StringRef> ScatterOp::getLoopIteratorTypes() {
-  SmallVector<StringRef> iteratorTypes(getUpdateType().getRank(),
-                                       getParallelIteratorTypeName());
+SmallVector<utils::IteratorType> ScatterOp::getLoopIteratorTypes() {
+  SmallVector<utils::IteratorType> iteratorTypes(getUpdateType().getRank(),
+                                                 utils::IteratorType::parallel);
   if (!unique_indices()) {
-    iteratorTypes[0] = getReductionIteratorTypeName();
+    iteratorTypes[0] = utils::IteratorType::reduction;
   }
   return iteratorTypes;
 }

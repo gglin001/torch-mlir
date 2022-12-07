@@ -85,7 +85,7 @@ void assertIsValidDim(OpBuilder &b, Location loc, Value dim, Value inputRank) {
 // TODO: loose this constraint when properly support list type
 bool isConstantIntListMatching(Value value, SmallVectorImpl<int64_t> &expects) {
   SmallVector<int64_t> intValues;
-  if (!matchPattern(value, m_TorchConstantIntList(intValues)))
+  if (!matchPattern(value, m_TorchListOfConstantInts(intValues)))
     return false;
 
   if (intValues.size() != expects.size())
@@ -154,6 +154,15 @@ castIntVectorToIndexVector(OpBuilder &b, Location loc,
   for (Value v : intValues)
     indexValues.push_back(castIntToIndex(b, loc, v));
   return indexValues;
+}
+
+SmallVector<Value>
+castIndexVectorToInt64Vector(OpBuilder &b, Location loc,
+                             SmallVectorImpl<Value> &indexValues) {
+  SmallVector<Value> intValues;
+  for (Value v : indexValues)
+    intValues.push_back(castIndexToInt64(b, loc, v));
+  return intValues;
 }
 
 Value getDimOp(OpBuilder &b, Location loc, Value v, int dim) {
@@ -312,11 +321,34 @@ Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar, Type dtype,
 int64_t getNumberOfElements(RankedTensorType inputType) {
   if (!inputType.hasStaticShape())
     return -1;
-  ArrayRef<int64_t> inputShape = inputType.getShape();
+  SmallVector<int64_t> inputShape =
+      makeShapeTorchCompatible(inputType.getShape());
   int64_t numel = 1;
   for (int64_t i = 0; i < inputType.getRank(); i++)
     numel *= inputShape[i];
   return numel;
+}
+
+SmallVector<int64_t> makeShapeLLVMCompatible(ArrayRef<int64_t> shape) {
+  SmallVector<int64_t> updatedShape(shape);
+  int64_t kDynamic = ShapedType::kDynamic;
+  for (unsigned i = 0; i < shape.size(); i++) {
+    assert(shape[i] >= 0 || shape[i] == kUnknownSize);
+    if (shape[i] == kUnknownSize)
+      updatedShape[i] = kDynamic;
+  }
+  return updatedShape;
+}
+
+SmallVector<int64_t> makeShapeTorchCompatible(ArrayRef<int64_t> shape) {
+  SmallVector<int64_t> updatedShape(shape);
+  int64_t kDynamic = ShapedType::kDynamic;
+  for (unsigned i = 0; i < shape.size(); i++) {
+    assert(shape[i] >= 0 || shape[i] == kDynamic);
+    if (shape[i] == kDynamic)
+      updatedShape[i] = kUnknownSize;
+  }
+  return updatedShape;
 }
 
 } // namespace Torch

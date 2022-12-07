@@ -94,7 +94,6 @@ public:
 
 namespace {
 class ConvertAtenFlipOp : public OpConversionPattern<AtenFlipOp> {
-
 public:
   using OpConversionPattern::OpConversionPattern;
   LogicalResult
@@ -111,7 +110,7 @@ public:
         rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(1));
 
     SmallVector<int64_t> axis;
-    if (!matchPattern(adaptor.dims(), m_TorchConstantIntList(axis)))
+    if (!matchPattern(adaptor.dims(), m_TorchListOfConstantInts(axis)))
       return rewriter.notifyMatchFailure(op,
                                          "only constant dim lists supported");
     // Only used to calculate flipped values, i.e. those on the flip axes. Other
@@ -123,7 +122,8 @@ public:
     Value initTensor = createZeroInitTensor(
         rewriter, loc, getTensorSizes(rewriter, loc, self), elementType);
 
-    SmallVector<StringRef> iteratorTypes(selfRank, "parallel");
+    SmallVector<utils::IteratorType> iteratorTypes(
+        selfRank, utils::IteratorType::parallel);
     SmallVector<AffineMap> indexingMaps(
         2, AffineMap::getMultiDimIdentityMap(selfRank, context));
     Value flipped =
@@ -313,7 +313,10 @@ public:
 
       // Check if the result of the matrix multiplication has more than one
       // dynamic batch dimensions.
-      ArrayRef<int64_t> batchDimsInt = resultType.getShape().drop_back(2);
+      SmallVector<int64_t> batchDimsInt =
+          makeShapeTorchCompatible(resultType.getShape());
+      batchDimsInt.pop_back();
+      batchDimsInt.pop_back();
       bool multipleDynamicBatchDims =
           llvm::count(batchDimsInt, kUnknownSize) > 1;
 
@@ -369,12 +372,12 @@ public:
       SmallVector<AffineExpr> lhsExpr;
       SmallVector<AffineExpr> rhsExpr;
       SmallVector<AffineExpr> outExpr;
-      SmallVector<StringRef> iteratorTypes;
+      SmallVector<utils::IteratorType> iteratorTypes(
+          batchRank, utils::IteratorType::parallel);
       for (unsigned i = 0; i < batchRank; i++) {
         lhsExpr.push_back(rewriter.getAffineDimExpr(i));
         rhsExpr.push_back(rewriter.getAffineDimExpr(i));
         outExpr.push_back(rewriter.getAffineDimExpr(i));
-        iteratorTypes.push_back(getParallelIteratorTypeName());
       }
       lhsExpr.insert(lhsExpr.end(), {rewriter.getAffineDimExpr(batchRank),
                                      rewriter.getAffineDimExpr(batchRank + 1)});
@@ -390,7 +393,9 @@ public:
       auto indexingMaps =
           AffineMap::inferFromExprList({lhsExpr, rhsExpr, outExpr});
       iteratorTypes.insert(iteratorTypes.end(),
-                           {"parallel", "reduction", "parallel"});
+                           {utils::IteratorType::parallel,
+                            utils::IteratorType::reduction,
+                            utils::IteratorType::parallel});
 
       Value finalRes =
           rewriter
@@ -501,17 +506,18 @@ public:
       return rewriter.create<arith::IndexCastOp>(loc, intType, v);
     };
 
-    SmallVector<int64_t> paddingInts;
-    if (!matchPattern(op.padding(), m_TorchConstantIntList(paddingInts))) {
+    SmallVector<Value> paddingIntValues;
+    if (!getListConstructElements(op.padding(), paddingIntValues))
       return rewriter.notifyMatchFailure(
-          op, "only support constant padding values");
-    }
+          op, "only support padding from a list construct");
+    paddingIntValues = getTypeConvertedValues(rewriter, loc, getTypeConverter(),
+                                              paddingIntValues);
     SmallVector<int64_t> strideInts;
-    if (!matchPattern(op.stride(), m_TorchConstantIntList(strideInts)))
+    if (!matchPattern(op.stride(), m_TorchListOfConstantInts(strideInts)))
       return rewriter.notifyMatchFailure(op,
                                          "only support constant int strides");
     SmallVector<int64_t> dilationInts;
-    if (!matchPattern(op.dilation(), m_TorchConstantIntList(dilationInts)))
+    if (!matchPattern(op.dilation(), m_TorchListOfConstantInts(dilationInts)))
       return rewriter.notifyMatchFailure(op,
                                          "only support constant int dilations");
 
@@ -548,8 +554,6 @@ public:
              "invalid: groups must divide weight batch size evenly.");
     SmallVector<Value> dilationIntValues =
         getAsConstantIntValues(rewriter, loc, dilationInts);
-    SmallVector<Value> paddingIntValues =
-        getAsConstantIntValues(rewriter, loc, paddingInts);
     SmallVector<Value> strideIntValues =
         getAsConstantIntValues(rewriter, loc, strideInts);
 
@@ -570,8 +574,8 @@ public:
       outDims[1] = weightInitDims[0];
       Value weightInitTensor =
           createZeroInitTensor(rewriter, loc, weightInitDims, elementType);
-      SmallVector<StringRef> iteratorTypes(inRank,
-                                           getParallelIteratorTypeName());
+      SmallVector<utils::IteratorType> iteratorTypes(
+          inRank, utils::IteratorType::parallel);
       SmallVector<AffineMap> indexingMaps{
           AffineMap::getMultiDimIdentityMap(inRank, context)};
       weight = rewriter
@@ -647,11 +651,8 @@ public:
 
     } else {
       // Pad input
-      SmallVector<int64_t, 4> paddingIncludingNC = {0, 0};
-      paddingIncludingNC.insert(paddingIncludingNC.end(), paddingInts.begin(),
-                                paddingInts.end());
-      paddedInput = torch_to_linalg::getZeroPaddedTensor(op, rewriter, input,
-                                                         paddingIncludingNC);
+      paddedInput = torch_to_linalg::getDynamicZeroPaddedTensor(
+          op, rewriter, input, paddingIntValues, /*unpaddedDims=*/2);
 
       // Calculate output dims
       for (size_t i = 0; i < numSpacialDims; i++)
@@ -683,8 +684,8 @@ public:
           AffineMap::get(/*dimCount=*/resultRank, /*symbolCount=*/0,
                          rewriter.getAffineDimExpr(1), context),
           rewriter.getMultiDimIdentityMap(resultRank)};
-      SmallVector<StringRef> iteratorTypes(resultRank,
-                                           getParallelIteratorTypeName());
+      SmallVector<utils::IteratorType> iteratorTypes(
+          resultRank, utils::IteratorType::parallel);
       outputTensor = rewriter
                          .create<linalg::GenericOp>(
                              loc, initTensor.getType(), bias, initTensor,
@@ -725,8 +726,10 @@ public:
               .getResult(0);
     } else {
       // Special depthwise case
-      auto inShape = input.getType().cast<RankedTensorType>().getShape();
-      auto weightShape = weight.getType().cast<RankedTensorType>().getShape();
+      auto inShape = makeShapeTorchCompatible(
+          input.getType().cast<RankedTensorType>().getShape());
+      auto weightShape = makeShapeTorchCompatible(
+          weight.getType().cast<RankedTensorType>().getShape());
       if (weightShape[0] != kUnknownSize && inShape[1] == groupSize &&
           weightShape[0] % inShape[1] == 0 && weightShape[1] == 1) {
         // Collapse weight shape
@@ -735,7 +738,8 @@ public:
             (weightShape[0] == kUnknownSize ? kUnknownSize
                                             : weightShape[0] * weightShape[1]),
             weightShape[2], weightShape[3]};
-        Type collapsedType = RankedTensorType::get(collapsedShape, elementType);
+        Type collapsedType = RankedTensorType::get(
+            makeShapeLLVMCompatible(collapsedShape), elementType);
         Value collapsedWeight = rewriter.create<tensor::CollapseShapeOp>(
             loc, collapsedType, weight, collapsedDims);
 
@@ -752,10 +756,9 @@ public:
       }
 
       // Grouped case, use the grouped conv linalg op
-
       auto expandGroups = [&](Value tensor, size_t dim) {
         auto inType = tensor.getType().cast<RankedTensorType>();
-        auto inShape = inType.getShape();
+        auto inShape = makeShapeTorchCompatible(inType.getShape());
 
         SmallVector<int64_t> outShape;
         for (auto i = 0; i < (long)inShape.size(); i++) {
@@ -780,14 +783,14 @@ public:
           indices.push_back({i});
         }
 
-        auto retType = inType.clone(outShape);
+        auto retType = inType.clone(makeShapeLLVMCompatible(outShape));
         return rewriter.create<tensor::ExpandShapeOp>(loc, retType, tensor,
                                                       indices);
       };
 
       auto expandWeight = [&](Value tensor) {
         auto inType = tensor.getType().cast<RankedTensorType>();
-        auto inShape = inType.getShape();
+        auto inShape = makeShapeTorchCompatible(inType.getShape());
 
         SmallVector<int64_t> outShape{
             groupSize, (inShape[0] == kUnknownSize ? kUnknownSize
@@ -798,7 +801,7 @@ public:
         for (auto i = 2; i <= (long)inShape.size(); i++)
           indices.push_back({i});
 
-        auto retType = inType.clone(outShape);
+        auto retType = inType.clone(makeShapeLLVMCompatible(outShape));
         return rewriter.create<tensor::ExpandShapeOp>(loc, retType, tensor,
                                                       indices);
       };

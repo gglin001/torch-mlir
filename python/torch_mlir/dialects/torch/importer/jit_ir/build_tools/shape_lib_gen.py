@@ -433,6 +433,9 @@ def aten〇rsub〇Scalar(self: List[int], other: float, alpha: float = 1) -> Lis
 def aten〇to〇dtype(self: List[int], dtype: int, non_blocking: bool = False, copy: bool = False, memory_format: Optional[int] = None) -> List[int]:
     return upstream_shape_functions.unary(self)
 
+def prims〇convert_element_type(a: List[int], dtype: int) -> List[int]:
+    return upstream_shape_functions.unary(a)
+
 def aten〇to〇dtype_layout(self: List[int], dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None, non_blocking: bool = False, copy: bool = False, memory_format: Optional[int] = None) -> List[int]:
     return self
 
@@ -544,6 +547,10 @@ def aten〇var〇dim(self: List[int], dim: Optional[List[int]], unbiased: bool =
 def aten〇var〇correction(self: List[int], dim: Optional[List[int]], correction: Optional[int], keepdim: bool = False) -> List[int]:
     return upstream_shape_functions.sum_mean_dim(self, dim, keepdim, None)
 
+def aten〇var_mean〇correction(self: List[int], dim: Optional[List[int]], correction: Optional[int], keepdim: bool = False) -> Tuple[List[int], List[int]]:
+    out = upstream_shape_functions.sum_mean_dim(self, dim, keepdim, None)
+    return out, out
+
 def aten〇std(self: List[int], unbiased: bool = True) -> List[int]:
     return []
 
@@ -581,6 +588,9 @@ def aten〇any〇dim(self: List[int], dim: int, keepdim: bool = False) -> List[i
 def aten〇max〇dim(self: List[int], dim: int, keepdim: bool = False) -> Tuple[List[int], List[int]]:
     reduced_shape = _reduce_along_dim(self, dim, keepdim)
     return reduced_shape, reduced_shape
+
+def aten〇amax(self: List[int], dim: List[int] = (), keepdim: bool = False) -> List[int]:
+    return upstream_shape_functions.sum_mean_dim(self, dim, keepdim, None)
 
 def aten〇mean〇dim(self: List[int], dim: Optional[List[int]], keepdim: bool = False, dtype: Optional[int] = None) -> List[int]:
     return upstream_shape_functions.sum_mean_dim(self, dim, keepdim, dtype)
@@ -689,6 +699,9 @@ def aten〇max_pool2d_with_indices(self: List[int], kernel_size: List[int], stri
 
 def aten〇max_pool2d_with_indices_backward(grad_output: List[int], self: List[int], kernel_size: List[int], stride: List[int], padding: List[int], dilation: List[int], ceil_mode: bool, indices: List[int]) -> List[int]:
     return self
+
+def aten〇upsample_nearest2d_backward(grad_output: List[int], output_size: List[int], input_size: List[int], scales_h: Optional[float] = None, scales_w: Optional[float] = None) -> List[int]:
+    return input_size
 
 # TODO: This should be upstreamed.
 # See https://github.com/pytorch/pytorch/pull/76889 for an example.
@@ -825,6 +838,15 @@ def aten〇cumsum(self: List[int], dim: int, dtype: Optional[int] = None) -> Lis
 def aten〇rand_like(self: List[int], dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None, memory_format: Optional[int] = None) -> List[int]:
     return self
 
+def aten〇randint〇low(low: int, high: int, size: List[int], dtype: Optional[int] = 4, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None) -> List[int]:
+    return size
+
+def aten〇randn(size: List[int], dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None) -> List[int]:
+    return size
+
+def aten〇randn〇generator(size: List[int], generator: Any, dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None) -> List[int]:
+    return size
+
 def aten〇arange〇start_step(start: float, end: float, step: float = 1, dtype: Optional[int] = None, layout: Optional[int] = None, device: Optional[device] = None, pin_memory: Optional[bool] = None) -> List[int]:
     return upstream_shape_functions.arange_start_step(start, end, step, dtype, layout, device, pin_memory)
 
@@ -894,7 +916,13 @@ def aten〇eq〇Tensor(self: List[int], other: List[int]) -> List[int]:
 def aten〇gt〇Tensor(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
 
+def aten〇ge〇Tensor(self: List[int], other: List[int]) -> List[int]:
+    return upstream_shape_functions.broadcast(self, other)
+
 def aten〇lt〇Tensor(self: List[int], other: List[int]) -> List[int]:
+    return upstream_shape_functions.broadcast(self, other)
+
+def aten〇le〇Tensor(self: List[int], other: List[int]) -> List[int]:
     return upstream_shape_functions.broadcast(self, other)
 
 def aten〇unsqueeze(self: List[int], dim: int) -> List[int]:
@@ -977,6 +1005,12 @@ def aten〇_convolution〇deprecated(input: List[int], weight: List[int], bias: 
 
 def aten〇flip(self: List[int], dims: List[int]) -> List[int]:
     return self
+
+def aten〇convolution_backward(grad_output: List[int], input: List[int], weight: List[int], bias_sizes: Optional[List[int]], stride: List[int], padding: List[int], dilation: List[int], transposed: bool, output_padding: List[int], groups: int, output_mask: List[bool]) -> Tuple[List[int], List[int], List[int]]:
+    return upstream_shape_functions.conv_backwards(grad_output, input, weight, bias_sizes)
+
+def aten〇convolution_backward_overrideable(grad_output: List[int], input: List[int], weight: List[int], stride: List[int], padding: List[int], dilation: List[int], transposed: bool, output_padding: List[int], groups: int, output_mask: List[bool]) -> Tuple[List[int], List[int], List[int]]:
+    return upstream_shape_functions.conv_backwards(grad_output, input, weight, None)
 
 def aten〇batch_norm(input: List[int], weight: Optional[List[int]], bias: Optional[List[int]], running_mean: Optional[List[int]], running_var: Optional[List[int]], training: bool, momentum: float, eps: float, cudnn_enabled: bool) -> List[int]:
     # Torch's symbolic shape analysis is a bit looser about optional
@@ -1210,8 +1244,8 @@ def aten〇linalg_vector_norm(self: List[int], ord: float = 2, dim: Optional[Lis
 def aten〇frobenius_norm〇dim(self: List[int], dim: List[int], keepdim: bool = False) -> List[int]:
     return upstream_shape_functions.sum_mean_dim(self, dim, keepdim, 0)
 
-def aten〇upsample_nearest2d〇vec(input: List[int], output_size: Optional[List[int]], scale_factors: Optional[List[float]]) -> List[int]:
-    return upstream_shape_functions.upsample_nearest2d(input, output_size, scale_factors)
+def aten〇upsample_nearest2d(self: List[int], output_size: List[int], scales_h: Optional[float] = None, scales_w: Optional[float] = None) -> List[int]:
+    return [self[0], self[1], output_size[0], output_size[1]]
 
 # ==============================================================================
 # Shape library generator main().
@@ -1258,7 +1292,7 @@ def main(args):
     for function in torch.jit._state._python_cu.get_functions():
         mb.import_function(function)
     # Clean up the IR a bit before writing it out.
-    pm = PassManager.parse("canonicalize", context=mb.module.context)
+    pm = PassManager.parse("builtin.module(canonicalize)", context=mb.module.context)
     pm.run(mb.module)
     # Munge the IR a bit to make it more systematically accessible.
     asm = mb.module.operation.get_asm()

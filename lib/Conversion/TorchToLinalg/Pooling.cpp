@@ -47,9 +47,9 @@ checkAndGetPoolingParameters(OpTy op, ConversionPatternRewriter &rewriter,
   }
   kernelSizeIntValues = getTypeConvertedValues(
       rewriter, op.getLoc(), typeConverter, kernelSizeTorchInt);
-  if (!matchPattern(op.stride(), m_TorchConstantIntList(strideInts)))
+  if (!matchPattern(op.stride(), m_TorchListOfConstantInts(strideInts)))
     return rewriter.notifyMatchFailure(op, "only support constant int strides");
-  if (!matchPattern(op.padding(), m_TorchConstantIntList(paddingInts)))
+  if (!matchPattern(op.padding(), m_TorchListOfConstantInts(paddingInts)))
     return rewriter.notifyMatchFailure(op,
                                        "only support constant int paddings");
   if (!matchPattern(op.ceil_mode(), m_TorchConstantBool(&ceilMode)))
@@ -145,7 +145,7 @@ public:
     bool ceilMode;
     SmallVector<Value, 2> kernelSizeIntValues;
     SmallVector<int64_t, 2> strideInts, paddingInts, dilationInts;
-    if (!matchPattern(op.dilation(), m_TorchConstantIntList(dilationInts)))
+    if (!matchPattern(op.dilation(), m_TorchListOfConstantInts(dilationInts)))
       return rewriter.notifyMatchFailure(op,
                                          "only support constant int dilations");
     if (failed(checkAndGetPoolingParameters<AtenMaxPool2dOp>(
@@ -223,7 +223,7 @@ public:
     bool ceilMode;
     SmallVector<Value, 2> kernelSizeIntValues;
     SmallVector<int64_t, 2> strideInts, paddingInts, dilationInts;
-    if (!matchPattern(op.dilation(), m_TorchConstantIntList(dilationInts)))
+    if (!matchPattern(op.dilation(), m_TorchListOfConstantInts(dilationInts)))
       return rewriter.notifyMatchFailure(op,
                                          "only support constant int dilations");
     if (failed(checkAndGetPoolingParameters<AtenMaxPool2dWithIndicesOp>(
@@ -276,9 +276,10 @@ public:
     // and kW, respectively, as described in the algorithm above.
     SmallVector<AffineMap> indexingMaps =
         AffineMap::inferFromExprList({inputExprs, kernelExprs, outputExprs});
-    SmallVector<StringRef> iteratorTypes(4, getParallelIteratorTypeName());
-    iteratorTypes.push_back(getReductionIteratorTypeName());
-    iteratorTypes.push_back(getReductionIteratorTypeName());
+    SmallVector<utils::IteratorType> iteratorTypes(
+        4, utils::IteratorType::parallel);
+    iteratorTypes.push_back(utils::IteratorType::reduction);
+    iteratorTypes.push_back(utils::IteratorType::reduction);
 
     // Input format is : [N, C, H, W]
     Value inputShapeW = getDimOp(rewriter, loc, self, 3);
@@ -412,7 +413,8 @@ public:
         loc, getAsOpFoldResult(outTensorShape), resultElementType);
     SmallVector<AffineMap> indexingMapsAvg(2,
                                            rewriter.getMultiDimIdentityMap(4));
-    SmallVector<StringRef> iteratorTypesAvg(4, "parallel");
+    SmallVector<utils::IteratorType> iteratorTypesAvg(
+        4, utils::IteratorType::parallel);
 
     Value avgPool2d =
         rewriter

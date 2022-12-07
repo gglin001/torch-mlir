@@ -342,7 +342,8 @@ public:
     Location loc = op.getLoc();
     Value input = adaptor.self();
     auto inputType = input.getType().cast<RankedTensorType>();
-    ArrayRef<int64_t> inputShape = inputType.getShape();
+    SmallVector<int64_t> inputShape =
+        makeShapeTorchCompatible(inputType.getShape());
     int64_t inputRank = inputType.getRank();
     TypeConverter *typeConverter = getTypeConverter();
     auto resultType =
@@ -637,10 +638,10 @@ public:
       return success();
     }
 
-    Type adjustedResultType =
-        RankedTensorType::get(outputShape, resultType.getElementType());
-    Type adjustedInputType =
-        RankedTensorType::get(inputShapeVec, resultType.getElementType());
+    Type adjustedResultType = RankedTensorType::get(
+        makeShapeLLVMCompatible(outputShape), resultType.getElementType());
+    Type adjustedInputType = RankedTensorType::get(
+        makeShapeLLVMCompatible(inputShapeVec), resultType.getElementType());
     Value castedInput =
         rewriter.create<tensor::CastOp>(loc, adjustedInputType, input);
     llvm::Optional<Value> expandedInput;
@@ -665,8 +666,8 @@ public:
         intermediateShape.push_back(sum);
       }
 
-      Type intermediateResultType =
-          RankedTensorType::get(intermediateShape, resultType.getElementType());
+      Type intermediateResultType = RankedTensorType::get(
+          makeShapeLLVMCompatible(intermediateShape), resultType.getElementType());
 
       expandedInput =
           rewriter
@@ -966,7 +967,8 @@ public:
     SmallVector<AffineMap> indexingMaps = {
         AffineMap::get(inputRank, 0, idExprs, op.getContext()),
         AffineMap::get(inputRank, 0, swapExprs, op.getContext())};
-    SmallVector<StringRef> iteratorTypes(inputRank, "parallel");
+    SmallVector<utils::IteratorType> iteratorTypes(
+        inputRank, utils::IteratorType::parallel);
     auto transpose = rewriter
                          .create<linalg::GenericOp>(
                              loc, outVector.getType(), inVector, outVector,
@@ -992,7 +994,7 @@ public:
       return failure();
 
     SmallVector<int64_t> dimensions;
-    if (!matchPattern(op.dims(), m_TorchConstantIntList(dimensions)))
+    if (!matchPattern(op.dims(), m_TorchListOfConstantInts(dimensions)))
       return rewriter.notifyMatchFailure(op, "all dimensions must be constant");
 
     Value inVector = adaptor.self();
@@ -1035,7 +1037,8 @@ public:
     AffineMap outputMap = AffineMap::get(inputRank, /*symbolCount=*/0, swapExprs,
                                          op->getContext());
     SmallVector<AffineMap> indexingMaps{inputMap, outputMap};
-    SmallVector<StringRef> iteratorTypes(inputRank, getParallelIteratorTypeName());
+    SmallVector<utils::IteratorType> iteratorTypes(
+        inputRank, utils::IteratorType::parallel);
     auto transpose = rewriter
                          .create<linalg::GenericOp>(
                              loc, outVector.getType(), inVector, outVector,
@@ -1259,8 +1262,8 @@ public:
 
     AffineMap id = AffineMap::getMultiDimIdentityMap(selfType.getRank(),
                                                      rewriter.getContext());
-    SmallVector<StringRef> iteratorTypes(selfType.getRank(),
-                                         getParallelIteratorTypeName());
+    SmallVector<utils::IteratorType> iteratorTypes(
+        selfType.getRank(), utils::IteratorType::parallel);
     Value result = rewriter
                        .create<linalg::GenericOp>(
                            loc,
@@ -1320,8 +1323,8 @@ public:
     auto srcType = src.getType().cast<RankedTensorType>();
     int64_t srcRank = srcType.getRank();
     SmallVector<int64_t> srcAbstractSizes(srcRank, kUnknownSize);
-    auto abstractSrcType =
-        RankedTensorType::get(srcAbstractSizes, srcType.getElementType());
+    auto abstractSrcType = RankedTensorType::get(
+        makeShapeLLVMCompatible(srcAbstractSizes), srcType.getElementType());
     Value abstractSrc =
         rewriter.create<tensor::CastOp>(loc, abstractSrcType, src);
 

@@ -22,7 +22,7 @@ __all__ = [
 
 def assert_arg_type_is_supported(ty):
     SUPPORTED = [np.float32, np.float64, np.uint8, np.int8, np.int32, np.int64, np.bool_]
-    assert ty in SUPPORTED, f"Only numpy arrays with dtypes in {SUPPORTED} are supported"
+    assert ty in SUPPORTED, f"Only numpy arrays with dtypes in {SUPPORTED} are supported, but got {ty}"
 
 
 memref_type_to_np_dtype = {
@@ -114,7 +114,7 @@ class RefBackendInvoker:
         return invoke
 
 
-LOWERING_PIPELINE = ",".join([
+LOWERING_PIPELINE = "builtin.module(" + ",".join([
     "func.func(refback-generalize-tensor-pad)",
     # Bufferize.
     "func.func(scf-bufferize)",
@@ -123,6 +123,7 @@ LOWERING_PIPELINE = ",".join([
     "func.func(linalg-bufferize)",
     "func-bufferize",
     "arith-bufferize",
+    "refback-mlprogram-bufferize",
     "func.func(tensor-bufferize)",
     "func.func(finalizing-bufferize)",
     # Munge to make it ExecutionEngine compatible.
@@ -134,7 +135,6 @@ LOWERING_PIPELINE = ",".join([
     "refback-munge-calling-conventions",
     # Insert global variable and instruction sequence for getting the next
     # global seed used in stateful rng.
-    "refback-insert-rng-globals",
     # Lower to LLVM
     "func.func(tm-tensor-to-loops)",
     "func.func(refback-munge-memref-copy)",
@@ -152,7 +152,7 @@ LOWERING_PIPELINE = ",".join([
     "convert-func-to-llvm",
     "convert-cf-to-llvm",
     "reconcile-unrealized-casts",
-])
+]) + ")"
 
 
 class RefBackendLinalgOnTensorsBackend(LinalgOnTensorsBackend):

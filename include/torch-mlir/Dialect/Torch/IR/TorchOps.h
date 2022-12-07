@@ -75,6 +75,21 @@ struct torch_constant_str_op_binder {
     return false;
   }
 };
+
+struct torch_constant_device_op_binder {
+  std::string &bind_value;
+
+  /// Creates a matcher instance that binds the value to bv if match succeeds.
+  torch_constant_device_op_binder(std::string &bv) : bind_value(bv) {}
+
+  bool match(Operation *op) {
+    if (auto constantDevice = dyn_cast<Torch::ConstantDeviceOp>(op)) {
+      bind_value = constantDevice.value().str();
+      return true;
+    }
+    return false;
+  }
+};
 } // namespace detail
 
 /// Matches the integer stored in a `torch.constant.bool`.
@@ -93,6 +108,12 @@ m_TorchConstantFloat(double *bind_value) {
 inline detail::torch_constant_str_op_binder
 m_TorchConstantStr(std::string &bind_value) {
   return detail::torch_constant_str_op_binder(bind_value);
+}
+
+/// Matches the string device value stored in a `torch.constant.device`.
+inline detail::torch_constant_device_op_binder
+m_TorchConstantDevice(std::string &bind_value) {
+  return detail::torch_constant_device_op_binder(bind_value);
 }
 
 namespace detail {
@@ -121,11 +142,11 @@ m_TorchConstantBool(bool *bind_value) {
 
 namespace detail {
 /// Matches the constant integers stored in a `torch.ListConstruct`.
-struct torch_list_construct_op_binder {
+struct torch_list_of_constant_ints_op_binder {
   SmallVectorImpl<int64_t> &bind_values;
 
   /// Creates a matcher instance that binds the value to bvs if match succeeds.
-  torch_list_construct_op_binder(SmallVectorImpl<int64_t> &bvs)
+  torch_list_of_constant_ints_op_binder(SmallVectorImpl<int64_t> &bvs)
       : bind_values(bvs) {}
 
   bool match(Operation *op) {
@@ -145,9 +166,40 @@ struct torch_list_construct_op_binder {
 } // namespace detail
 
 /// Matches the constant integers stored in a `torch.prim.ListConstruct`.
-inline detail::torch_list_construct_op_binder
-m_TorchConstantIntList(SmallVectorImpl<int64_t> &bind_values) {
-  return detail::torch_list_construct_op_binder(bind_values);
+inline detail::torch_list_of_constant_ints_op_binder
+m_TorchListOfConstantInts(SmallVectorImpl<int64_t> &bind_values) {
+  return detail::torch_list_of_constant_ints_op_binder(bind_values);
+}
+
+namespace detail {
+/// Matches the constant bools stored in a `torch.ListConstruct`.
+struct torch_list_of_constant_bools_op_binder {
+  SmallVectorImpl<bool> &bind_values;
+
+  /// Creates a matcher instance that binds the value to bvs if match succeeds.
+  torch_list_of_constant_bools_op_binder(SmallVectorImpl<bool> &bvs)
+      : bind_values(bvs) {}
+
+  bool match(Operation *op) {
+    auto listConstruct = dyn_cast<Torch::PrimListConstructOp>(op);
+    if (!listConstruct)
+      return false;
+    for (Value value : listConstruct.elements()) {
+      bool num;
+      if (matchPattern(value, m_TorchConstantBool(&num)))
+        bind_values.push_back(num);
+      else
+        return false;
+    }
+    return true;
+  }
+};
+} // namespace detail
+
+/// Matches the constant bools stored in a `torch.prim.ListConstruct`.
+inline detail::torch_list_of_constant_bools_op_binder
+m_TorchListOfConstantBools(SmallVectorImpl<bool> &bind_values) {
+  return detail::torch_list_of_constant_bools_op_binder(bind_values);
 }
 
 namespace detail {

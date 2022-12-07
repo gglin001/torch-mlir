@@ -2,7 +2,7 @@ name: Roll PyTorch
 
 on:
   schedule:
-    - cron: '0 12 * * *'
+    - cron: '0 13 * * *'
   workflow_dispatch:
 
 jobs:
@@ -23,24 +23,38 @@ jobs:
     - name: Setup ccache
       uses: ./.github/actions/setup-build
       with:
-        cache-suffix: x86_64-out-of-tree-OFF
+        cache-suffix: 'rollPyTorch'
 
     - name: Determine nightly PyTorch version
       run: |
+        set -eo pipefail
+
         cd ${GITHUB_WORKSPACE}
         python -m pip install wheel
-        # Fetch the most recent nightly PyTorch release
-        PT_RELEASE=$(python -m pip index versions -f https://download.pytorch.org/whl/nightly/cpu/torch_nightly.html --pre torch | grep "Available versions" | tr ' ' '\n' | grep "^[0-9]" | sort --version-sort --reverse | head -n1 | tr -d ',' | sed 's/\([^+]*\).*/\1/')
-        printf -- "-f https://download.pytorch.org/whl/nightly/cpu/torch_nightly.html\n--pre\ntorch==%s\n" "${PT_RELEASE}" > pytorch-requirements.txt
-        # Fetch the whl file associated with the nightly release
-        rm -f torch-"${PT_RELEASE}"*.whl
-        python -m pip download -f https://download.pytorch.org/whl/nightly/cpu/torch_nightly.html --pre "torch==${PT_RELEASE}"
+
+        # Fetch the most recent nightly torchvision release
+        VISION_RELEASE=$(python -m pip index versions -f https://download.pytorch.org/whl/nightly/cpu/torch_nightly.html --pre torchvision | grep "Available versions" | tr ' ' '\n' | grep "^[0-9]" | sort --version-sort --reverse | head -n1 | tr -d ',' | sed 's/\([^+]*\).*/\1/')
+        echo "Found torchvision release ${VISION_RELEASE}"
+
+        # Fetch the whl file associated with the nightly torchvision release
+        rm -f torch*.whl
+        python -m pip download -f https://download.pytorch.org/whl/nightly/cpu/torch_nightly.html --pre "torchvision==${VISION_RELEASE}"
+
+        # Downloading the torchvision WHL also downloads the PyTorch WHL file
+        # Read the version from the downloaded whl file without extracting it
+        PT_RELEASE=$(unzip -p torch-*.whl 'torch-*/METADATA' | grep "^Version:" | awk '{ print $2 }' | sed 's/\([^+]*\).*/\1/')
+        echo "Found torch release ${PT_RELEASE}"
+        printf -- "-f https://download.pytorch.org/whl/nightly/cpu/torch_nightly.html\n--pre\ntorch==%s\ntorchvision==%s\n" "${PT_RELEASE}" "${VISION_RELEASE}" > pytorch-requirements.txt
+
         # Read the commit hash from the downloaded whl file without extracting it
         PT_HASH=$(unzip -p torch-"${PT_RELEASE}"*.whl torch/version.py | grep git_version | awk '{ print $3 }' | tr -d "'")
+        echo "Found torch commit hash ${PT_HASH}"
+
         PT_HASH_CHANGED=0
         echo "${PT_HASH}" | cmp - pytorch-hash.txt --quiet || PT_HASH_CHANGED=$?
         echo "${PT_HASH}" > pytorch-hash.txt
         rm torch-"${PT_RELEASE}"*.whl
+
         # Write the release and hash to the environment file so that we can
         # retrieve them when creating a PR
         echo "PT_HASH=${PT_HASH}" >> ${GITHUB_ENV}
@@ -71,7 +85,7 @@ jobs:
     - name: Update PyTorch Build Cache (if running on main branch)
       if: github.ref_name == 'main'
       id: cache-pytorch
-      uses: actions/cache@v3
+      uses: ashay/cache@v1
       with:
         path: ${{ github.workspace }}/build_tools/python_deploy/wheelhouse
-        key: ubuntu-x86_64-pytorch-${{ env.PT_HASH }}
+        key: ${{ runner.os }}-pytorch-${{ env.PT_HASH }}

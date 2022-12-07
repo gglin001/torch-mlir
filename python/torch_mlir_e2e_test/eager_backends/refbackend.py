@@ -24,7 +24,6 @@ from torch_mlir_e2e_test.linalg_on_tensors_backends.refbackend import (
 )
 
 NUMPY_TO_TORCH_DTYPE_DICT = {
-    np.bool: torch.bool,
     np.bool_: torch.bool,
     np.uint8: torch.uint8,
     np.int8: torch.int8,
@@ -67,7 +66,7 @@ class EagerModeRefBackend(TorchMLIREagerBackend):
         if module_hash not in self.module_to_refbackend_invoker:
             run_pipeline_with_repro_report(
                 imported_module,
-                "torch-function-to-torch-backend-pipeline,torch-backend-to-linalg-on-tensors-backend-pipeline",
+                "builtin.module(torch-function-to-torch-backend-pipeline,torch-backend-to-linalg-on-tensors-backend-pipeline)",
                 "EagerMode",
             )
             self.module_to_refbackend_invoker[module_hash] = _ref_backend.load(
@@ -88,4 +87,4 @@ class EagerModeRefBackend(TorchMLIREagerBackend):
         return torch.from_numpy(e).clone()
 
     def transfer_from_torch_to_device(self, tensor: torch.Tensor) -> np.ndarray:
-        return tensor.numpy()
+        return tensor.detach().numpy()

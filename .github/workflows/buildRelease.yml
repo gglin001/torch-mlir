@@ -21,7 +21,7 @@ jobs:
         submodules: 'true'
     - uses: ./.github/actions/setup-build
       with:
-        cache-suffix: ''
+        cache-suffix: 'release'
     - name: Build Python wheels and smoke test.
       run: |
         cd $GITHUB_WORKSPACE
@@ -51,10 +51,25 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.WORKFLOW_INVOCATION_TOKEN }}
       with:
         release_id: ${{ github.event.inputs.release_id }}
+    - name: Create dist directory
+      if: github.event.inputs.release_id != ''
+      run: mkdir dist
+    - name: Copy releases to publish to dist directory
+      if: github.event.inputs.release_id != ''
+      run: cp build_tools/python_deploy/wheelhouse/torch_mlir-*.whl dist/
+
+    # Wheels must be published from a linux environment.
+    #
+    # See https://github.com/pypa/gh-action-pypi-publish/discussions/15
+    - name: Store the binary wheel
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: dist
 
   build_macos:
     name: MacOS Build
-    runs-on: macos-12
+    runs-on: macos-latest
     steps:
     - name: Get torch-mlir
       uses: actions/checkout@v2
@@ -62,7 +77,7 @@ jobs:
         submodules: 'true'
     - uses: ./.github/actions/setup-build
       with:
-        cache-suffix: ''
+        cache-suffix: 'release'
     - name: Build Python wheels and smoke test.
       run: |
         cd $GITHUB_WORKSPACE
@@ -93,8 +108,22 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.WORKFLOW_INVOCATION_TOKEN }}
       with:
         release_id: ${{ github.event.inputs.release_id }}
-        
-        
+    - name: Create dist directory
+      if: github.event.inputs.release_id != ''
+      run: mkdir dist
+    - name: Copy releases to publish to dist directory
+      if: github.event.inputs.release_id != ''
+      run: cp build_tools/python_deploy/wheelhouse/torch_mlir-*.whl dist/
+
+    # Wheels must be published from a linux environment.
+    #
+    # See https://github.com/pypa/gh-action-pypi-publish/discussions/15
+    - name: Store the binary wheel
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: dist
+
   build_windows:
     name: Windows Build
     runs-on: windows-latest
@@ -105,7 +134,7 @@ jobs:
         submodules: 'true'
     - uses: ./.github/actions/setup-build
       with:
-        cache-suffix: ''
+        cache-suffix: 'release'
     - name: Set up Visual Studio shell
       uses: egor-tensin/vs-shell@v2
       with:
@@ -137,6 +166,22 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.WORKFLOW_INVOCATION_TOKEN }}
       with:
         release_id: ${{ github.event.inputs.release_id }}
+    - name: Create dist directory
+      if: github.event.inputs.release_id != ''
+      run: mkdir dist
+      continue-on-error: true
+    - name: Copy releases to publish to dist directory
+      if: github.event.inputs.release_id != ''
+      run: cp ./wheelhouse/torch_mlir-*.whl dist/
+
+    # Wheels must be published from a linux environment.
+    #
+    # See https://github.com/pypa/gh-action-pypi-publish/discussions/15
+    - name: Store the binary wheel
+      uses: actions/upload-artifact@v2
+      with:
+        name: wheels
+        path: dist
 
   publish_releases:
     runs-on: ubuntu-latest
@@ -154,3 +199,17 @@ jobs:
       with:
         workflow: Publish releases page
         token: ${{ secrets.WORKFLOW_INVOCATION_TOKEN }}
+
+    # Wheels must be published from a linux environment.
+    #
+    # See https://github.com/pypa/gh-action-pypi-publish/discussions/15
+    - name: Download wheels for publishing to PyPI
+      uses: actions/download-artifact@v3
+      with:
+        name: wheels
+        path: dist
+    - name: Publish to PyPI
+      if: github.event.inputs.release_id != ''
+      uses: pypa/gh-action-pypi-publish@v1.5.1
+      with:
+        password: ${{ secrets.PYPI_API_TOKEN }}

@@ -12,8 +12,7 @@
 #include "../PassDetail.h"
 #include "./MhloLegalizeUtils.h"
 #include "./PopulatePatterns.h"
-#include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "mlir-hlo/utils/hlo_utils.h"
+#include "mhlo/IR/hlo_ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -23,6 +22,7 @@
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionOps.h"
+#include "utils/hlo_utils.h"
 #include <iostream>
 #include <numeric>
 
@@ -30,6 +30,35 @@ using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
 using namespace mlir::torch::torch_to_mhlo;
+
+LogicalResult broadcastRanks(PatternRewriter &rewriter, Operation *op,
+                             mlir::Value &self, mlir::Value &other,
+                             size_t dimSizeIndexBits) {
+  auto selfTy = self.getType().template dyn_cast<RankedTensorType>();
+  auto otherTy = other.getType().template dyn_cast<RankedTensorType>();
+  auto selfRank = selfTy.getRank();
+  auto otherRank = otherTy.getRank();
+  if (selfRank == 0 || otherRank == 0)
+    return success();
+  if (selfRank > otherRank) {
+    auto unsqueezeDims =
+        llvm::to_vector<4>(llvm::seq<int64_t>(0, selfRank - otherRank));
+    auto unsqueezeInfo = mhlo::unsqueezeTensor(rewriter, op, other,
+                                               unsqueezeDims, dimSizeIndexBits);
+    if (failed(unsqueezeInfo))
+      return failure();
+    other = *unsqueezeInfo;
+  } else if (otherRank > selfRank) {
+    auto unsqueezeDims =
+        llvm::to_vector<4>(llvm::seq<int64_t>(0, otherRank - selfRank));
+    auto unsqueezeInfo = mhlo::unsqueezeTensor(rewriter, op, self,
+                                               unsqueezeDims, dimSizeIndexBits);
+    if (failed(unsqueezeInfo))
+      return failure();
+    self = *unsqueezeInfo;
+  }
+  return success();
+}
 
 bool skipMultiplyAlpha(Value alphaValue) {
   double doubleValue;
@@ -151,21 +180,8 @@ public:
       return op.emitError(
           "only floating-point or integer datatype legalization supported");
 
-    // FIXME: Handle layout, device and pin_memory. Assume dtype has been
-    // processed to set output type correctly?
-    if (!op.layout().getType().template isa<Torch::NoneType>())
-      return op.emitError("only default layout is supported");
-
-    bool pinMemory;
-    if (!op.pin_memory().getType().template isa<Torch::NoneType>() &&
-        (!matchPattern(op.pin_memory(), m_TorchConstantBool(&pinMemory)) ||
-         pinMemory)) {
-      return op.emitError(
-          "unsupported pin_memory, should be either None or false");
-    }
-
     SmallVector<int64_t> shape;
-    if (!matchPattern(op.size(), m_TorchConstantIntList(shape))) {
+    if (!matchPattern(op.size(), m_TorchListOfConstantInts(shape))) {
       return op.emitError("shape must be a list of Scalar constants");
     }
 
@@ -401,6 +417,10 @@ public:
                std::is_same<AtenOpT, AtenGtScalarOp>()) {
       compareDirectionAttr = chlo::ComparisonDirectionAttr::get(
           op->getContext(), chlo::ComparisonDirection::GT);
+    } else if (std::is_same<AtenOpT, AtenGeTensorOp>() ||
+               std::is_same<AtenOpT, AtenGeScalarOp>()) {
+      compareDirectionAttr = chlo::ComparisonDirectionAttr::get(
+          op->getContext(), chlo::ComparisonDirection::GE);
     } else if (std::is_same<AtenOpT, AtenEqTensorOp>() ||
                std::is_same<AtenOpT, AtenEqScalarOp>()) {
       compareDirectionAttr = chlo::ComparisonDirectionAttr::get(
@@ -409,6 +429,16 @@ public:
                std::is_same<AtenOpT, AtenNeScalarOp>()) {
       compareDirectionAttr = chlo::ComparisonDirectionAttr::get(
           op->getContext(), chlo::ComparisonDirection::NE);
+    } else if (std::is_same<AtenOpT, AtenLtTensorOp>() ||
+               std::is_same<AtenOpT, AtenLtScalarOp>()) {
+      compareDirectionAttr = chlo::ComparisonDirectionAttr::get(
+          op->getContext(), chlo::ComparisonDirection::LT);
+    } else if (std::is_same<AtenOpT, AtenLeTensorOp>() ||
+               std::is_same<AtenOpT, AtenLeScalarOp>()) {
+      compareDirectionAttr = chlo::ComparisonDirectionAttr::get(
+          op->getContext(), chlo::ComparisonDirection::LE);
+    } else {
+      return op.emitError("operator haven't been supported");
     }
     DenseIntElementsAttr bcastDimensions;
     rewriter.replaceOpWithNewOp<chlo::BroadcastCompareOp>(
@@ -488,13 +518,50 @@ LogicalResult ConvertAtenOp<AtenSizeIntOp>::matchAndRewrite(
   auto selfType = adaptor.self().getType().dyn_cast<TensorType>();
   if (!selfType)
     return op.emitError("only tensor types are currently supported");
-  auto dim = rewriter.create<arith::IndexCastOp>(
-      op.getLoc(), rewriter.getIndexType(), adaptor.dim());
+
+  Value dim;
+  int64_t dimInt;
+  if (matchPattern(op.dim(), m_TorchConstantInt(&dimInt))) {
+    dimInt = toPositiveDim(dimInt, selfType.getRank());
+    dim = rewriter.create<arith::ConstantIndexOp>(op.getLoc(), dimInt);
+  } else {
+    Value inputRank = rewriter.create<arith::ConstantOp>(
+        op.getLoc(), rewriter.getI64IntegerAttr(selfType.getRank()));
+    dim = toPositiveDimDynamic(rewriter, op.getLoc(), adaptor.dim(), inputRank);
+    dim = rewriter.create<arith::IndexCastOp>(op.getLoc(),
+                                              rewriter.getIndexType(), dim);
+  }
+
   auto dimSize = rewriter.create<tensor::DimOp>(
       op.getLoc(), rewriter.getIndexType(), adaptor.self(), dim);
 
   rewriter.replaceOpWithNewOp<arith::IndexCastOp>(
       op, getTypeConverter()->convertType(op.getType()), dimSize);
+
+  return success();
+}
+
+template <>
+LogicalResult ConvertAtenOp<AtenWhereSelfOp>::matchAndRewrite(
+    AtenWhereSelfOp op,
+    OpAdaptor adaptor,
+    ConversionPatternRewriter& rewriter) const {
+  Value self = adaptor.self();
+  Value cond = adaptor.condition();
+  Value other = adaptor.other();
+
+  if (failed(
+          broadcastRanks(rewriter, op, self, cond, options.dimSizeIndexBits)))
+    return op.emitError("failed broadcast self and condition ranks");
+
+  if (failed(
+          broadcastRanks(rewriter, op, other, cond, options.dimSizeIndexBits)))
+    return op.emitError("failed broadcast other and condition ranks");
+
+  rewriter.replaceOpWithNewOp<chlo::BroadcastSelectOp>(
+      op,
+      getTypeConverter()->convertType(op.getType()),
+      ArrayRef<Value>{cond, self, other});
   return success();
 }
 
@@ -580,7 +647,7 @@ LogicalResult ConvertAtenOp<AtenPermuteOp>::matchAndRewrite(
                         "currently supported");
 
   SmallVector<int64_t> permValues;
-  if (!matchPattern(adaptor.dims(), m_TorchConstantIntList(permValues)))
+  if (!matchPattern(adaptor.dims(), m_TorchListOfConstantInts(permValues)))
     return rewriter.notifyMatchFailure(
         op, "only constant dimensions are currently supported");
 
@@ -914,7 +981,7 @@ LogicalResult ConvertAtenOp<AtenNativeLayerNormOp>::matchAndRewrite(
 
   SmallVector<int64_t> normalizedShape;
   if (!matchPattern(op.normalized_shape(),
-                    m_TorchConstantIntList(normalizedShape))) {
+                    m_TorchListOfConstantInts(normalizedShape))) {
     return rewriter.notifyMatchFailure(
         op, "normalized_shape must be a list of const int");
   }
@@ -1143,15 +1210,6 @@ LogicalResult ConvertAtenOp<AtenArangeStartStepOp>::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   Location loc = op->getLoc();
 
-  // The pinMemory should be either `none` or `false`.
-  bool pinMemory;
-  if (!op.pin_memory().getType().isa<Torch::NoneType>() &&
-      (!matchPattern(op.pin_memory(), m_TorchConstantBool(&pinMemory)) ||
-       pinMemory)) {
-    return rewriter.notifyMatchFailure(
-        op, "unimplemented: pin_memory must be either None or false");
-  }
-
   // Get element type of resultType as dtype
   auto outType = this->getTypeConverter()
                      ->convertType(op.getType())
@@ -1232,6 +1290,7 @@ void mlir::torch::torch_to_mhlo::populateBasicOpPatternsAndLegality(
   INSERT_BINARY_MULDIV_PATTERN(AtenDivTensorOp, chlo::BroadcastDivOp);
   INSERT_BINARY_MULDIV_PATTERN(AtenDivTensorModeOp, chlo::BroadcastDivOp);
   INSERT_BINARY_MULDIV_PATTERN(AtenDivScalarOp, chlo::BroadcastDivOp);
+  INSERT_BINARY_MULDIV_PATTERN(AtenRemainderScalarOp, chlo::BroadcastRemOp);
 #undef INSERT_BINARY_MULDIV_PATTERN
 
 #define INSERT_BINARY_COMPARE_PATTERN(AtenOp)                                  \
@@ -1240,8 +1299,12 @@ void mlir::torch::torch_to_mhlo::populateBasicOpPatternsAndLegality(
 
   INSERT_BINARY_COMPARE_PATTERN(AtenGtTensorOp);
   INSERT_BINARY_COMPARE_PATTERN(AtenGtScalarOp);
+  INSERT_BINARY_COMPARE_PATTERN(AtenGeTensorOp);
+  INSERT_BINARY_COMPARE_PATTERN(AtenGeScalarOp);
   INSERT_BINARY_COMPARE_PATTERN(AtenLtTensorOp);
   INSERT_BINARY_COMPARE_PATTERN(AtenLtScalarOp);
+  INSERT_BINARY_COMPARE_PATTERN(AtenLeTensorOp);
+  INSERT_BINARY_COMPARE_PATTERN(AtenLeScalarOp);
   INSERT_BINARY_COMPARE_PATTERN(AtenEqTensorOp);
   INSERT_BINARY_COMPARE_PATTERN(AtenEqScalarOp);
   INSERT_BINARY_COMPARE_PATTERN(AtenNeTensorOp);
@@ -1274,6 +1337,7 @@ void mlir::torch::torch_to_mhlo::populateBasicOpPatternsAndLegality(
   INSERT_ATENOP_PATTERN(AtenNumelOp);
   INSERT_ATENOP_PATTERN(AtenSizeIntOp);
   INSERT_ATENOP_PATTERN(AtenToDtypeOp);
+  INSERT_ATENOP_PATTERN(AtenWhereSelfOp);
 #undef INSERT_ATENOP_PATTERN
 
 #define INSERT_BINARY_BROADCAST_PATTERN(AtenOp, MhloOp)                        \
@@ -1283,5 +1347,6 @@ void mlir::torch::torch_to_mhlo::populateBasicOpPatternsAndLegality(
   INSERT_BINARY_BROADCAST_PATTERN(AtenMaximumOp, chlo::BroadcastMaxOp);
   INSERT_BINARY_BROADCAST_PATTERN(AtenMinimumOp, chlo::BroadcastMinOp);
   INSERT_BINARY_BROADCAST_PATTERN(Aten__And__TensorOp, chlo::BroadcastAndOp);
+  INSERT_BINARY_BROADCAST_PATTERN(AtenBitwiseAndTensorOp, chlo::BroadcastAndOp);
 #undef INSERT_BINARY_BROADCAST_PATTERN
 }

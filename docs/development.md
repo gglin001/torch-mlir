@@ -178,11 +178,24 @@ Torch-MLIR can also be built using Bazel (apart from the official CMake build) f
 ```shell
 ./utils/bazel/docker/run_docker.sh
 ```
-2. Build torch-mlir using bazel (from container):
+
+2. Build torch-mlir:
 ```shell
-./utils/bazel/docker/run_bazel_build.sh
+bazel build @torch-mlir//:torch-mlir-opt
 ```
-3. Find the built binary at `utils/bazel/bazel-bin/external/torch-mlir/torch-mlir-opt`.
+The built binary should be at `bazel-bin/external/torch-mlir/torch-mlir-opt`.
+
+3. Test torch-mlir (lit test only):
+```shell
+bazel test @torch-mlir//test/...
+```
+
+We welcome patches to torch-mlir's Bazel build. If you do contribute,
+please complete your PR with an invocation of buildifier to ensure
+the BUILD files are formatted consistently:
+```shell
+bazel run @torch-mlir//:buildifier
+```
 
 ## Docker Builds
 
@@ -260,7 +273,7 @@ docker build -t your-name/torch-mlir-ci --no-cache .
 
 ### Other configurable environmental variables
 
-The following additional environmental variables can be used to customie your docker build:
+The following additional environmental variables can be used to customize your docker build:
 
 * Custom Release Docker image:
   Defaults to `stellaraccident/manylinux2014_x86_64-bazel-5.1.0:latest`

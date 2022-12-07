@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
+#include "torch-mlir/Conversion/Utils/Utils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
@@ -1346,6 +1347,40 @@ OpFoldResult AtenIntScalarOp::fold(ArrayRef<Attribute> operands) {
 }
 
 //===----------------------------------------------------------------------===//
+// AtenSortIntOp
+//===----------------------------------------------------------------------===//
+
+void AtenSortIntOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                MLIRContext *context) {
+  patterns.add(+[](AtenSortIntOp op, PatternRewriter &rewriter) {
+    SmallVector<int64_t> listElements;
+    if (!matchPattern(op.self(), m_TorchListOfConstantInts(listElements)))
+      return rewriter.notifyMatchFailure(
+          op, "all input list elements must be constant ints");
+    bool reverse;
+    if (!matchPattern(op.reverse(), m_TorchConstantBool(&reverse)))
+      return rewriter.notifyMatchFailure(
+          op, "Expected reverse arg to be constant bool.");
+
+    std::sort(listElements.begin(), listElements.end());
+    if (reverse)
+      std::reverse(listElements.begin(), listElements.end());
+
+    SmallVector<Value> sortedListElements;
+    for (int64_t elem : listElements)
+      sortedListElements.push_back(rewriter.create<Torch::ConstantIntOp>(
+          op->getLoc(), rewriter.getI64IntegerAttr(elem)));
+    Value result = rewriter.create<Torch::PrimListConstructOp>(
+        op->getLoc(), Torch::ListType::get(rewriter.getType<Torch::IntType>()),
+        sortedListElements);
+
+    op.self().replaceAllUsesWith(result);
+    rewriter.eraseOp(op);
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
 // NonValueTensorLiteralOp
 //===----------------------------------------------------------------------===//
 
@@ -1366,7 +1401,8 @@ LogicalResult NonValueTensorLiteralOp::inferReturnTypes(
 
 static bool areSizesAndDtypesCompatible(BaseTensorType a, BaseTensorType b) {
   if (a.hasSizes() && b.hasSizes()) {
-    if (failed(verifyCompatibleShape(a.getSizes(), b.getSizes())))
+    if (failed(verifyCompatibleShape(makeShapeLLVMCompatible(a.getSizes()),
+                                     makeShapeLLVMCompatible(b.getSizes()))))
       return false;
   }
   if (a.hasDtype() && b.hasDtype()) {
@@ -1965,7 +2001,7 @@ OpFoldResult Aten__Contains__IntListOp::fold(ArrayRef<Attribute> operands) {
   if (!matchPattern(itemConstruct, m_TorchConstantInt(&item)))
     return nullptr;
 
-  if (!matchPattern(l(), m_TorchConstantIntList(list)))
+  if (!matchPattern(l(), m_TorchListOfConstantInts(list)))
     return nullptr;
 
   for (auto elem : list) {

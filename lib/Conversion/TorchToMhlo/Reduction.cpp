@@ -12,7 +12,7 @@
 #include "../PassDetail.h"
 #include "./MhloLegalizeUtils.h"
 #include "./PopulatePatterns.h"
-#include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mhlo/IR/hlo_ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
@@ -347,15 +347,15 @@ LogicalResult ConvertAtenReductionOp<AtenSumOp>::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   Value input = adaptor.self();
   auto inputTy = input.getType().dyn_cast<RankedTensorType>();
+  auto outTy = getTypeConverter()
+                   ->convertType(op.getType())
+                   .template dyn_cast<RankedTensorType>();
   if (!inputTy) {
     return rewriter.notifyMatchFailure(op, "only Tensor types supported in MHLO");
   }
-  auto dtype = adaptor.dtype();
-  if (!dtype.getType().isa<Torch::NoneType>()) {
-    auto dstElemTy = getTypeConverter()
-                         ->convertType(op.getType())
-                         .template dyn_cast<RankedTensorType>()
-                         .getElementType();
+  if (inputTy.getElementType() != outTy.getElementType()) {
+    // Use output element type as computation type.
+    auto dstElemTy = outTy.getElementType();
     input = rewriter.create<mhlo::ConvertOp>(op->getLoc(), input, dstElemTy);
     inputTy = input.getType().dyn_cast<RankedTensorType>();
   }
@@ -376,11 +376,11 @@ LogicalResult ConvertAtenReductionOp<AtenSumOp>::matchAndRewrite(
   for (int64_t i = 0; i < inputTy.getRank(); i++) {
     dims.push_back(i);
   }
-
   Value initValue =
       createInitialValueForReduceOp(op, inputTy.getElementType(), rewriter);
   if (!initValue) return failure();
 
+  llvm::sort(dims.begin(), dims.end());
   auto mhloReduceOp = rewriter.create<mhlo::ReduceOp>(
       op.getLoc(), input, initValue, rewriter.getI64TensorAttr(dims));
 
@@ -401,7 +401,8 @@ LogicalResult ConvertAtenReductionOp<AtenSumOp>::matchAndRewrite(
     rewriter.create<mhlo::ReturnOp>(op->getLoc(), addResult);
   }
 
-  rewriter.replaceOp(op, mhloReduceOp.getResults());
+  rewriter.replaceOpWithNewOp<tensor::CastOp>(op, outTy,
+                                              mhloReduceOp.getResults());
   return success();
 }
 } // namespace
@@ -438,6 +439,7 @@ LogicalResult ConvertAtenReductionOp<AtenMaxOp>::matchAndRewrite(
   Value initValue =
       createInitialValueForReduceOp(op, inputTy.getElementType(), rewriter);
   if (!initValue) return failure();
+  llvm::sort(dims.begin(), dims.end());
   auto mhloReduceOp = rewriter.create<mhlo::ReduceOp>(
       op.getLoc(), input, initValue, rewriter.getI64TensorAttr(dims));
 
@@ -458,7 +460,9 @@ LogicalResult ConvertAtenReductionOp<AtenMaxOp>::matchAndRewrite(
     rewriter.create<mhlo::ReturnOp>(op->getLoc(), maxResult);
   }
 
-  rewriter.replaceOp(op, mhloReduceOp.getResults());
+  rewriter.replaceOpWithNewOp<tensor::CastOp>(
+      op, getTypeConverter()->convertType(op.getType()),
+      mhloReduceOp.getResults());
   return success();
 }
 } // namespace
@@ -471,15 +475,15 @@ LogicalResult ConvertAtenReductionOp<AtenSumDimIntListOp>::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   Value input = adaptor.self();
   auto inputTy = input.getType().dyn_cast<RankedTensorType>();
+  auto outTy = getTypeConverter()
+                   ->convertType(op.getType())
+                   .template dyn_cast<RankedTensorType>();
   if (!inputTy) {
     return rewriter.notifyMatchFailure(op, "only Tensor types supported in MHLO");
   }
-  auto dtype = adaptor.dtype();
-  if (!dtype.getType().isa<Torch::NoneType>()) {
-    auto dstElemTy = getTypeConverter()
-                         ->convertType(op.getType())
-                         .template dyn_cast<RankedTensorType>()
-                         .getElementType();
+  if (inputTy.getElementType() != outTy.getElementType()) {
+    // Use output element type as computation type.
+    auto dstElemTy = outTy.getElementType();
     input = rewriter.create<mhlo::ConvertOp>(op->getLoc(), input, dstElemTy);
     inputTy = input.getType().dyn_cast<RankedTensorType>();
   }
@@ -499,7 +503,7 @@ LogicalResult ConvertAtenReductionOp<AtenSumDimIntListOp>::matchAndRewrite(
 
   SmallVector<int64_t> inputDims;
   SmallVector<int64_t> dims;
-  if (!matchPattern(op.dim(), m_TorchConstantIntList(inputDims))) {
+  if (!matchPattern(op.dim(), m_TorchListOfConstantInts(inputDims))) {
     return rewriter.notifyMatchFailure(op, "non-int dim list unsupported");
   }
   if (inputDims.size() == 0) {
@@ -522,6 +526,7 @@ LogicalResult ConvertAtenReductionOp<AtenSumDimIntListOp>::matchAndRewrite(
       createInitialValueForReduceOp(op, inputTy.getElementType(), rewriter);
   if (!initValue) return failure();
 
+  llvm::sort(dims.begin(), dims.end());
   auto mhloReduceOp = rewriter.create<mhlo::ReduceOp>(
       op.getLoc(), input, initValue, rewriter.getI64TensorAttr(dims));
 
@@ -566,7 +571,8 @@ LogicalResult ConvertAtenReductionOp<AtenSumDimIntListOp>::matchAndRewrite(
         mhloReduceOp.getResult(0), outShapeTensor);
     return success();
   }
-  rewriter.replaceOp(op, mhloReduceOp.getResults());
+  rewriter.replaceOpWithNewOp<tensor::CastOp>(op, outTy,
+                                              mhloReduceOp.getResults());
   return success();
 }
 } // namespace
@@ -595,7 +601,7 @@ LogicalResult ConvertAtenReductionOp<AtenFrobeniusNormDimOp>::matchAndRewrite(
   }
 
   SmallVector<int64_t> dims;
-  if (!matchPattern(op.dim(), m_TorchConstantIntList(dims))) {
+  if (!matchPattern(op.dim(), m_TorchListOfConstantInts(dims))) {
     return rewriter.notifyMatchFailure(
         op, "non-const integer `dim` is not supported");
   }
