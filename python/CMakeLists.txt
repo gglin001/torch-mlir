@@ -103,14 +103,9 @@ if(TORCH_MLIR_ENABLE_JIT_IR_IMPORTER)
 endif()
 
 ################################################################################
-# Eager mode
-################################################################################
-
-add_subdirectory(torch_mlir/eager_mode)
-
-################################################################################
 # Custom op example
-# Required for running the update_torch_ods.sh and update_shape_lib.sh scripts.
+# Required for running the update_torch_ods.sh and update_abstract_interp_lib.sh
+# scripts.
 ################################################################################
 
 # add_subdirectory(torch_mlir/_torch_mlir_custom_op_example)

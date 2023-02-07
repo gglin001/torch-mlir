@@ -9,7 +9,7 @@
 
 #include "torch-mlir/Dialect/Torch/IR/TorchTypes.h"
 #include "mlir/IR/DialectImplementation.h"
-#include "torch-mlir/Conversion/Utils/Utils.h"
+#include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
 #include "llvm/ADT/STLExtras.h"
@@ -86,10 +86,10 @@ bool Torch::isValidSubtype(Type subtype, Type type) {
 //===----------------------------------------------------------------------===//
 
 // Parse the `<T1, T2, T3>` of a type such as `!torch.tuple<T1, T2, T3>`.
-static Optional<SmallVector<Type>>
+static std::optional<SmallVector<Type>>
 parseMultipleContainedTypes(AsmParser &parser) {
   if (parser.parseLess())
-    return None;
+    return std::nullopt;
 
   SmallVector<Type> containedTypes;
   if (!parser.parseOptionalGreater())
@@ -97,11 +97,11 @@ parseMultipleContainedTypes(AsmParser &parser) {
   do {
     Type containedType = parseTorchDialectType(parser);
     if (!containedType)
-      return None;
+      return std::nullopt;
     containedTypes.push_back(containedType);
   } while (!parser.parseOptionalComma());
   if (parser.parseGreater())
-    return None;
+    return std::nullopt;
   return containedTypes;
 }
 
@@ -147,6 +147,10 @@ void Torch::UnionType::print(AsmPrinter &printer) const {
 //===----------------------------------------------------------------------===//
 
 static bool isValidTorchDtype(Type dtype) {
+  // For complex types, get the underlying element type
+  if (dtype.isa<ComplexType>()) {
+    dtype = dtype.cast<ComplexType>().getElementType();
+  }
   // Torch quantized types.
   if (dtype.isa<Torch::QInt8Type, Torch::QUInt8Type>())
     return true;
@@ -181,7 +185,7 @@ Type BaseTensorType::getWithSizesAndDtypeFrom(BaseTensorType other) const {
 }
 
 Type BaseTensorType::getWithSizesAndDtype(
-    Optional<ArrayRef<int64_t>> optionalSizes, Type optionalDtype) const {
+    std::optional<ArrayRef<int64_t>> optionalSizes, Type optionalDtype) const {
   if (isa<NonValueTensorType>())
     return NonValueTensorType::get(getContext(), optionalSizes, optionalDtype);
   if (isa<ValueTensorType>())
@@ -199,7 +203,7 @@ ValueTensorType BaseTensorType::getWithValueSemantics() const {
 
 static LogicalResult
 verifyTensorType(function_ref<InFlightDiagnostic()> emitError,
-                 Optional<ArrayRef<int64_t>> optionalSizes,
+                 std::optional<ArrayRef<int64_t>> optionalSizes,
                  Type optionalDtype) {
   if (optionalDtype && !isValidTorchDtype(optionalDtype)) {
     emitError() << "invalid dtype " << optionalDtype
@@ -222,7 +226,8 @@ Type parseTensorType(MLIRContext *context, AsmParser &parser,
   llvm::SMLoc startLoc = parser.getCurrentLocation();
   if (parser.parseOptionalLess())
     return getTensorType(context,
-                         /*optionalSizes=*/None, /*optionalDtype=*/Type());
+                         /*optionalSizes=*/std::nullopt,
+                         /*optionalDtype=*/Type());
   bool hasSizes;
   SmallVector<int64_t> sizes;
   if (succeeded(parser.parseOptionalStar())) {
@@ -269,7 +274,7 @@ Type parseTensorType(MLIRContext *context, AsmParser &parser,
   }
   if (parser.parseGreater())
     return Type();
-  Optional<ArrayRef<int64_t>> optionalSizes;
+  std::optional<ArrayRef<int64_t>> optionalSizes;
   if (hasSizes)
     optionalSizes.emplace(sizes);
 
@@ -281,7 +286,7 @@ Type parseTensorType(MLIRContext *context, AsmParser &parser,
 }
 
 static void printTensorType(AsmPrinter &printer,
-                            Optional<ArrayRef<int64_t>> optionalSizes,
+                            std::optional<ArrayRef<int64_t>> optionalSizes,
                             Type optionalDtype) {
   if (!optionalSizes && !optionalDtype)
     return;
@@ -320,13 +325,13 @@ ValueTensorType NonValueTensorType::getWithValueSemantics() const {
 NonValueTensorType
 NonValueTensorType::getWithLeastStaticInformation(MLIRContext *context) {
   return NonValueTensorType::get(context,
-                                 /*optionalSizes=*/None,
+                                 /*optionalSizes=*/std::nullopt,
                                  /*optionalDtype=*/Type());
 }
 
 LogicalResult
 NonValueTensorType::verify(function_ref<InFlightDiagnostic()> emitError,
-                           Optional<ArrayRef<int64_t>> optionalSizes,
+                           std::optional<ArrayRef<int64_t>> optionalSizes,
                            Type optionalDtype) {
   return verifyTensorType(emitError, optionalSizes, optionalDtype);
 }
@@ -335,7 +340,7 @@ Type NonValueTensorType::parse(AsmParser &parser) {
   MLIRContext *context = parser.getContext();
   return parseTensorType(
       context, parser,
-      [](MLIRContext *context, Optional<ArrayRef<int64_t>> optionalSizes,
+      [](MLIRContext *context, std::optional<ArrayRef<int64_t>> optionalSizes,
          Type optionalType) {
         return NonValueTensorType::get(context, optionalSizes, optionalType);
       });
@@ -357,7 +362,7 @@ NonValueTensorType ValueTensorType::getWithoutValueSemantics() const {
 ValueTensorType
 ValueTensorType::getWithLeastStaticInformation(MLIRContext *context) {
   return ValueTensorType::get(context,
-                              /*optionalSizes=*/None,
+                              /*optionalSizes=*/std::nullopt,
                               /*optionalDtype=*/Type());
 }
 
@@ -387,7 +392,7 @@ TensorType ValueTensorType::toBuiltinTensor() const {
 
 LogicalResult
 ValueTensorType::verify(function_ref<InFlightDiagnostic()> emitError,
-                        Optional<ArrayRef<int64_t>> optionalSizes,
+                        std::optional<ArrayRef<int64_t>> optionalSizes,
                         Type optionalDtype) {
   return verifyTensorType(emitError, optionalSizes, optionalDtype);
 }
@@ -396,7 +401,7 @@ Type ValueTensorType::parse(AsmParser &parser) {
   MLIRContext *context = parser.getContext();
   return parseTensorType(
       context, parser,
-      [](MLIRContext *context, Optional<ArrayRef<int64_t>> optionalSizes,
+      [](MLIRContext *context, std::optional<ArrayRef<int64_t>> optionalSizes,
          Type optionalType) {
         return ValueTensorType::get(context, optionalSizes, optionalType);
       });
@@ -428,8 +433,8 @@ Type Torch::meetTensorTypes(BaseTensorType lhs, BaseTensorType rhs) {
 
   // If neither has sizes, we have nothing left to do.
   if (!lhs.hasSizes() && !rhs.hasSizes()) {
-    return ValueTensorType::get(lhs.getContext(), /*optionalSizes=*/None,
-                                dtype);
+    return ValueTensorType::get(lhs.getContext(),
+                                /*optionalSizes=*/std::nullopt, dtype);
   }
 
   // If the number of sizes is different, the two types are contradictory.
@@ -458,5 +463,46 @@ Type Torch::meetTensorTypes(BaseTensorType lhs, BaseTensorType rhs) {
     }
   }
 
-  return lhs.getWithSizesAndDtype(makeArrayRef(newSizes), dtype);
+  return lhs.getWithSizesAndDtype(ArrayRef(newSizes), dtype);
+}
+
+////===----------------------------------------------------------------------===//
+//// DictType
+////===----------------------------------------------------------------------===//
+
+// TODO: These are not DRY in that the two type predicates AnyTorchDictKeyType
+// and AnyTorchType generate the exact same code (in TorchOps.cpp.inc).
+// Unfortunately the generated implementations aren't visible/exposed ("static" linkage)
+// and the predicates themselves can't be added/used in the specification of the parameters
+// of the Torch_DictType.
+static bool isAnyTorchDictKeyType(Type type) {
+  return type.isa<Torch::AnyType>() || type.isa<Torch::IntType>() ||
+         type.isa<Torch::BoolType>() || type.isa<Torch::FloatType>() ||
+         type.isa<Torch::StringType>() || type.isa<Torch::BaseTensorType>();
+}
+
+static bool isAnyTorchType(Type type) {
+  return isValidSubtype(type, Torch::NumberType::get(type.getContext())) ||
+         type.isa<Torch::BaseTensorType>() || type.isa<Torch::AnyType>() ||
+         type.isa<Torch::BoolType>() || type.isa<Torch::DictType>() ||
+         type.isa<Torch::DeviceType>() || type.isa<Torch::GeneratorType>() ||
+         type.isa<Torch::ListType>() || type.isa<Torch::LinearParamsType>() ||
+         type.isa<Torch::NumberType>() || type.isa<Torch::NnModuleType>() ||
+         type.isa<Torch::NoneType>() || type.isa<Torch::OptionalType>() ||
+         type.isa<Torch::StringType>() || type.isa<Torch::TupleType>() ||
+         type.isa<Torch::UnionType>();
+}
+
+LogicalResult
+DictType::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
+                 Type keyType, Type valueType) {
+  if (!isAnyTorchDictKeyType(keyType)) {
+    emitError() << "invalid " << keyType << " for !torch.dict key type";
+    return failure();
+  }
+  if (!isAnyTorchType(valueType)) {
+    emitError() << "invalid " << valueType << " for !torch.dict value type";
+    return failure();
+  }
+  return success();
 }

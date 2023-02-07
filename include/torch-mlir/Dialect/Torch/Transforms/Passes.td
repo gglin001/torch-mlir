@@ -239,7 +239,7 @@ def DecomposeComplexOps : Pass<"torch-decompose-complex-ops", "func::FuncOp"> {
 }
 
 def ReifyShapeCalculations : Pass<"torch-reify-shape-calculations", "ModuleOp"> {
-  let summary = "Decompose complicated torch operations";
+  let summary = "Reify shape calculations.";
   let constructor = "mlir::torch::Torch::createReifyShapeCalculationsPass()";
   let description = [{
   }];
@@ -253,9 +253,23 @@ def SimplifyShapeCalculations : Pass<"torch-simplify-shape-calculations", "func:
   }];
 }
 
-def DropShapeCalculations : Pass<"torch-drop-shape-calculations", "func::FuncOp"> {
-  let summary = "Drop reified shape calculations.";
-  let constructor = "mlir::torch::Torch::createDropShapeCalculationsPass()";
+def ReifyDtypeCalculations : Pass<"torch-reify-dtype-calculations", "ModuleOp"> {
+  let summary = "Reify dtype calculations.";
+  let constructor = "mlir::torch::Torch::createReifyDtypeCalculationsPass()";
+  let description = [{
+  }];
+}
+
+def SimplifyDtypeCalculations : Pass<"torch-simplify-dtype-calculations", "func::FuncOp"> {
+  let summary = "Simplify reified dtype calculations.";
+  let constructor = "mlir::torch::Torch::createSimplifyDtypeCalculationsPass()";
+  let description = [{
+  }];
+}
+
+def DropAbstractInterpCalculations : Pass<"torch-drop-abstract-interp-calculations", "func::FuncOp"> {
+  let summary = "Drop reified abstract interpretation calculations.";
+  let constructor = "mlir::torch::Torch::createDropAbstractInterpCalculationsPass()";
   let description = [{
   }];
 }
@@ -329,15 +343,16 @@ def LowerToBackendContract
   let dependentDialects = ["func::FuncDialect"];
 }
 
-def VerifyBackendContract
-    : Pass<"torch-verify-backend-contract", "ModuleOp"> {
+def VerifyBackendContractNoDecompositions
+    : Pass<"torch-verify-backend-contract-no-decompositions", "ModuleOp"> {
   let summary = "Check that program satisfies backend contract.";
-  let constructor =
-    "mlir::torch::Torch::createVerifyBackendContractPass()";
+  let constructor = [{
+    mlir::torch::Torch::createVerifyBackendContractNoDecompositionsPass()
+  }];
   let description = [{
     This pass performs a set of inspections to check that program satisfies backend
-    contract. In case of check failure it prints out the error message and returns
-    `signalPassFailure()` status.
+    contract assuming that no decompositions were applied. In case of check failure
+    it prints out the error message and returns `signalPassFailure()` status.
   }];
 }
 

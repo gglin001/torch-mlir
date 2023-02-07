@@ -54,9 +54,7 @@ void mlir::torch::RefBackend::registerRefBackendPasses() { ::registerPasses(); }
 static bool isArgMemRefTypeValid(Type type) {
   if (auto memRefType = type.dyn_cast<MemRefType>()) {
     Type elemTy = memRefType.getElementType();
-    if (elemTy.isa<Float32Type>()) {
-      return true;
-    } else if (elemTy.isa<Float64Type>()) {
+    if (elemTy.isa<Float16Type, Float32Type, Float64Type>()) {
       return true;
     } else if (auto integerTy = elemTy.dyn_cast<IntegerType>()) {
       if (integerTy.isSignlessInteger(64))
@@ -206,8 +204,8 @@ class MungeCallingConventions
     for (auto &p : invokedConsumeFuncReturnFuncs) {
       auto consumeFuncReturnFunc = b.create<func::FuncOp>(
           module.getLoc(), p.first,
-          FunctionType::get(module.getContext(), p.second, {}),
-          b.getStringAttr("private"));
+          FunctionType::get(module.getContext(), p.second, {}));
+      consumeFuncReturnFunc.setPrivate();
       addEmitCInterfaceAttr(consumeFuncReturnFunc);
     }
   }
@@ -394,7 +392,7 @@ Operation *createLinalgCopyOp(OpBuilder &b, Location loc, Value from,
       loc,
       /*inputs=*/from,
       /*outputs=*/to,
-      /*indexingMaps=*/llvm::makeArrayRef({id, id}),
+      /*indexingMaps=*/llvm::ArrayRef({id, id}),
       /*iteratorTypes=*/iteratorTypes,
       [](OpBuilder &b, Location loc, ValueRange args) {
         b.create<linalg::YieldOp>(loc, args.front());

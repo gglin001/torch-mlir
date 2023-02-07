@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
+#include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 
 namespace mlir {
 namespace torch {
@@ -237,11 +238,18 @@ SmallVector<Value> getTypeConvertedValues(OpBuilder &b, Location loc,
   }));
 }
 
+mlir::RankedTensorType GetTypeFromTensorShape(llvm::ArrayRef<int64_t> shape,
+                                              mlir::Type elementType,
+                                              mlir::Attribute encoding) {
+  return mlir::RankedTensorType::get(makeShapeLLVMCompatible(shape),
+                                     elementType, encoding);
+}
+
 // Convert a scalar value to the target type. The scalar value can be an element
 // from a tensor or a scalar in the pytorch dialect. Both the scalar and dtype
 // should be converted builtin types.
 Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar, Type dtype,
-                           llvm::Optional<Type> srcOriginalDtype) {
+                           std::optional<Type> srcOriginalDtype) {
   Type scalarType = scalar.getType();
   if (scalarType == dtype)
     return scalar;
@@ -314,41 +322,6 @@ Value convertScalarToDtype(OpBuilder &b, Location loc, Value scalar, Type dtype,
   }
 
   llvm_unreachable("convertScalarToDtype should handle all the types");
-}
-
-// Return the number of elements of a tensor if the shape is static; otherwise,
-// return -1.
-int64_t getNumberOfElements(RankedTensorType inputType) {
-  if (!inputType.hasStaticShape())
-    return -1;
-  SmallVector<int64_t> inputShape =
-      makeShapeTorchCompatible(inputType.getShape());
-  int64_t numel = 1;
-  for (int64_t i = 0; i < inputType.getRank(); i++)
-    numel *= inputShape[i];
-  return numel;
-}
-
-SmallVector<int64_t> makeShapeLLVMCompatible(ArrayRef<int64_t> shape) {
-  SmallVector<int64_t> updatedShape(shape);
-  int64_t kDynamic = ShapedType::kDynamic;
-  for (unsigned i = 0; i < shape.size(); i++) {
-    assert(shape[i] >= 0 || shape[i] == kUnknownSize);
-    if (shape[i] == kUnknownSize)
-      updatedShape[i] = kDynamic;
-  }
-  return updatedShape;
-}
-
-SmallVector<int64_t> makeShapeTorchCompatible(ArrayRef<int64_t> shape) {
-  SmallVector<int64_t> updatedShape(shape);
-  int64_t kDynamic = ShapedType::kDynamic;
-  for (unsigned i = 0; i < shape.size(); i++) {
-    assert(shape[i] >= 0 || shape[i] == kDynamic);
-    if (shape[i] == kDynamic)
-      updatedShape[i] = kUnknownSize;
-  }
-  return updatedShape;
 }
 
 } // namespace Torch

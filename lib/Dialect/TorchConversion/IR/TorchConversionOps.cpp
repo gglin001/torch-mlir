@@ -8,7 +8,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionOps.h"
-#include "torch-mlir/Conversion/Utils/Utils.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -46,7 +45,7 @@ LogicalResult ToBuiltinTensorOp::verify() {
 }
 
 LogicalResult ToBuiltinTensorOp::inferReturnTypes(
-    MLIRContext *context, Optional<Location> location, ValueRange operands,
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   auto resultType =
@@ -76,8 +75,8 @@ LogicalResult FromBuiltinTensorOp::verify() {
 // FromI64Op
 //===----------------------------------------------------------------------===//
 
-OpFoldResult FromI64Op::fold(llvm::ArrayRef<mlir::Attribute> operands) {
-  auto attr = operands[0].dyn_cast_or_null<mlir::IntegerAttr>();
+OpFoldResult FromI64Op::fold(FoldAdaptor adaptor) {
+  auto attr = adaptor.getOperand().dyn_cast_or_null<mlir::IntegerAttr>();
   if (attr) {
     return attr;
   } else {
@@ -89,8 +88,8 @@ OpFoldResult FromI64Op::fold(llvm::ArrayRef<mlir::Attribute> operands) {
 // ToI64Op
 //===----------------------------------------------------------------------===//
 
-OpFoldResult ToI64Op::fold(llvm::ArrayRef<mlir::Attribute> operands) {
-  auto attr = operands[0].dyn_cast_or_null<mlir::IntegerAttr>();
+OpFoldResult ToI64Op::fold(FoldAdaptor adaptor) {
+  auto attr = adaptor.getOperand().dyn_cast_or_null<mlir::IntegerAttr>();
   if (attr) {
     return attr;
   } else {
@@ -102,8 +101,8 @@ OpFoldResult ToI64Op::fold(llvm::ArrayRef<mlir::Attribute> operands) {
 // ToF64Op
 //===----------------------------------------------------------------------===//
 
-OpFoldResult ToF64Op::fold(llvm::ArrayRef<mlir::Attribute> operands) {
-  auto attr = operands[0].dyn_cast_or_null<mlir::FloatAttr>();
+OpFoldResult ToF64Op::fold(FoldAdaptor adaptor) {
+  auto attr = adaptor.getOperand().dyn_cast_or_null<mlir::FloatAttr>();
   if (attr) {
     return attr;
   } else {
@@ -115,8 +114,8 @@ OpFoldResult ToF64Op::fold(llvm::ArrayRef<mlir::Attribute> operands) {
 // FromF64Op
 //===----------------------------------------------------------------------===//
 
-OpFoldResult FromF64Op::fold(llvm::ArrayRef<mlir::Attribute> operands) {
-  auto attr = operands[0].dyn_cast_or_null<mlir::FloatAttr>();
+OpFoldResult FromF64Op::fold(FoldAdaptor adaptor) {
+  auto attr = adaptor.getOperand().dyn_cast_or_null<mlir::FloatAttr>();
   if (attr) {
     return attr;
   } else {
