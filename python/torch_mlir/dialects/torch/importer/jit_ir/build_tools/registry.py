@@ -32,8 +32,14 @@ def _get_default_value(arg: "SIG_ATTR_TYPE") -> str:
             # testing against the real ops, and tuples work fine in all
             # the places this kicks in (e.g. conv dilations -- we aren't
             # mutating those lists).
-            default_debug = arg["default_debug"].replace(
-                '[', '(').replace(']', ')')
+            default_list = arg["default_debug"]
+            # (,) is not a valid empty tuple contruction in Python, so
+            # we must handle the emtpy case separately.
+            if default_list == "[]":
+                default_debug = "()"
+            else:
+                default_debug = default_list.replace(
+                    "[", "(").replace("]", ",)")
         elif arg["pytype"] == "str":
             default_debug = repr(arg["default_debug"]).replace("'", '"')
         else:
@@ -43,7 +49,7 @@ def _get_default_value(arg: "SIG_ATTR_TYPE") -> str:
 
 def _pytype_to_fn_pytype_common(pytype: str) -> str:
     if "number" in pytype:
-        return pytype.replace("number", "Union[int, float]")
+        return pytype.replace("number", "Union[int, float, complex]")
     # `torch.device` is lowercase.
     if pytype == "Device":
         return "device"
@@ -86,7 +92,7 @@ def _pytype_to_dtype_fn_pytype(pytype: str) -> str:
     """
     # Dtype functions only care about the rank and dtype of tensors.
     if "Tensor" in pytype:
-        return pytype.replace("Tensor", "int")
+        return pytype.replace("Tensor", "Tuple[int, int]")
     return _pytype_to_fn_pytype_common(pytype)
 
 def _pytype_to_decomposition_fn_pytype(pytype: str) -> str:
@@ -191,9 +197,13 @@ class JitOperator:
         def_name = "〇".join(mlir_op_name.split("."))
         def_name += f"〡{function_kind}"
         parameter_decls = list(map(parameter_decl_builder, self.arguments))
+        parameter_decls = list(filter(None, parameter_decls))
         ret_decls = list(map(ret_decl_builder, self.returns))
+        ret_decls = list(filter(None, ret_decls))
         parameters = ", ".join(parameter_decls)
         result = ", ".join(ret_decls)
+        if len(ret_decls) == 0:
+            result = "None"
         if len(ret_decls) >= 2:
             result = f"Tuple[{result}]"
 
@@ -232,8 +242,7 @@ class JitOperator:
             default = _get_default_value(arg)
             parameter_name = _rename_python_keyword_parameter_name(arg["name"])
             if "Tensor" in arg["pytype"]:
-                return ", ".join([f"{parameter_name}_rank: {pytype}{default}",
-                                  f"{parameter_name}_dtype: {pytype}{default}"])
+                return f"{parameter_name}_rank_dtype: {pytype}{default}"
             return f"{parameter_name}: {pytype}{default}"
 
         def ret_decl_builder(arg: "SIG_ATTR_TYPE") -> str:
@@ -241,7 +250,7 @@ class JitOperator:
             # results of type `number`. Here we handle this case because
             # `_pytype_to_dtype_fn_pytype` will replace `number` with
             # `Union[int, float]`.
-            if arg["pytype"] == "number":
+            if arg["pytype"] in ["number", "Tensor"]:
                 return "int"
             return _pytype_to_dtype_fn_pytype(arg["pytype"])
 
@@ -267,6 +276,23 @@ class JitOperator:
 
         return self._get_function_signature(
             "decomposition", parameter_decl_builder, ret_decl_builder)
+
+    def get_has_value_semantics_function_signature(self):
+        """Gets the Python function signature for this op's has_value_semantics function.
+
+        While this is technically debug-only output, it is useful to copy-paste
+        it from the debug dump into the library definitions, as many
+        ops have extra default arguments and stuff that are tedious to write out
+        right.
+        """
+        def parameter_decl_builder(arg: "SIG_ATTR_TYPE") -> str:
+            return ""
+
+        def ret_decl_builder(arg: "SIG_ATTR_TYPE") -> str:
+            return ""
+
+        return self._get_function_signature(
+            "has_value_semantics", parameter_decl_builder, ret_decl_builder)
 
     def __repr__(self):
         f = io.StringIO()

@@ -52,24 +52,6 @@ public:
 } // namespace
 
 namespace {
-class ConvertAtenIsFloatingPointOp
-    : public OpConversionPattern<AtenIsFloatingPointOp> {
-public:
-  using OpConversionPattern::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(AtenIsFloatingPointOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto tensorType = op.getSelf().getType().cast<BaseTensorType>();
-    bool result =
-        tensorType.hasDtype() && tensorType.getDtype().isa<mlir::FloatType>();
-    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
-        op, BoolAttr::get(getContext(), result));
-    return success();
-  }
-};
-} // namespace
-
-namespace {
 class ConvertRuntimeAssertOp : public OpConversionPattern<RuntimeAssertOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -232,10 +214,71 @@ public:
     return success();
   }
 };
+
+class ConvertTorchConstantIntOp
+    : public OpConversionPattern<Torch::ConstantIntOp> {
+public:
+  using OpConversionPattern<Torch::ConstantIntOp>::OpConversionPattern;
+  using OpAdaptor = Torch::ConstantIntOp::Adaptor;
+  LogicalResult
+  matchAndRewrite(Torch::ConstantIntOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // note: arith.constant only accept signless integer, so convert signed to
+    // signless
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        op, rewriter.getIntegerAttr(rewriter.getI64Type(),
+                                    op.getValueAttr().getValue()));
+    return success();
+  }
+};
 } // namespace
 
 namespace {
-template <typename OpTy>
+class ConvertAtenFloatScalarOp : public OpConversionPattern<AtenFloatScalarOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenFloatScalarOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type resultType =
+        this->getTypeConverter()->convertType(op->getResult(0).getType());
+    Value result =
+        convertScalarToDtype(rewriter, op.getLoc(), adaptor.getA(), resultType);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+class ConvertAtenAddOp : public OpConversionPattern<AtenAddOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenAddOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Type resultType =
+        this->getTypeConverter()->convertType(op->getResult(0).getType());
+    Value operandA =
+        convertScalarToDtype(rewriter, loc, adaptor.getA(), resultType);
+    Value operandB =
+        convertScalarToDtype(rewriter, loc, adaptor.getB(), resultType);
+    if (resultType.isa<mlir::FloatType>()) {
+      rewriter.replaceOpWithNewOp<arith::AddFOp>(op, operandA, operandB);
+    } else if (resultType.isa<mlir::IntegerType>()) {
+      rewriter.replaceOpWithNewOp<arith::AddIOp>(op, operandA, operandB);
+    } else {
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: only support integer or float result type");
+    }
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+template <typename OpTy, typename BinOp>
 class ConvertAtenAnyOrAllBoolOp : public OpConversionPattern<OpTy> {
 public:
   using OpConversionPattern<OpTy>::OpConversionPattern;
@@ -244,38 +287,37 @@ public:
   LogicalResult
   matchAndRewrite(OpTy op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-
+    Location loc = op.getLoc();
+    Value result;
     SmallVector<Value> inputListTorchBool;
     if (!getListConstructElements(op.getSelf(), inputListTorchBool)) {
       return rewriter.notifyMatchFailure(
-          op, "Unimplemented input list not constructed from ListConstruct");
+          op, "unimplemented: input list not constructed from ListConstruct");
     }
-    SmallVector<bool> inputListBool;
-    for (Value v : inputListTorchBool) {
-      bool cst;
-      if (!matchPattern(v, m_TorchConstantBool(&cst)))
-        return rewriter.notifyMatchFailure(
-            op, "only support constant bool input list elements");
-      inputListBool.push_back(cst);
-    }
-    bool result = reductionFunction(inputListBool);
-
-    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
-        op, rewriter.getBoolAttr(result));
+    SmallVector<Value> inputList = getTypeConvertedValues(
+        rewriter, loc, this->getTypeConverter(), inputListTorchBool);
+    result = inputList[0];
+    for (unsigned i = 1; i < inputList.size(); i++)
+      result = rewriter.create<BinOp>(loc, result, inputList[i]);
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
 
-class ConvertAtenAnyOp : public ConvertAtenAnyOrAllBoolOp<AtenAnyBoolOp> {
-  using ConvertAtenAnyOrAllBoolOp<AtenAnyBoolOp>::ConvertAtenAnyOrAllBoolOp;
+class ConvertAtenAnyOp
+    : public ConvertAtenAnyOrAllBoolOp<AtenAnyBoolOp, arith::OrIOp> {
+  using ConvertAtenAnyOrAllBoolOp<AtenAnyBoolOp,
+                                  arith::OrIOp>::ConvertAtenAnyOrAllBoolOp;
   bool reductionFunction(ArrayRef<bool> inputArray) const override {
     return llvm::any_of(inputArray,
                         [](bool inputListElem) { return inputListElem; });
   }
 };
 
-class ConvertAtenAllOp : public ConvertAtenAnyOrAllBoolOp<AtenAllBoolOp> {
-  using ConvertAtenAnyOrAllBoolOp<AtenAllBoolOp>::ConvertAtenAnyOrAllBoolOp;
+class ConvertAtenAllOp
+    : public ConvertAtenAnyOrAllBoolOp<AtenAllBoolOp, arith::AndIOp> {
+  using ConvertAtenAnyOrAllBoolOp<AtenAllBoolOp,
+                                  arith::AndIOp>::ConvertAtenAnyOrAllBoolOp;
   bool reductionFunction(ArrayRef<bool> inputArray) const override {
     return llvm::all_of(inputArray,
                         [](bool inputListElem) { return inputListElem; });
@@ -340,8 +382,6 @@ public:
     RewritePatternSet patterns(context);
     target.addIllegalOp<AtenDimOp>();
     patterns.add<ConvertAtenDimOp>(typeConverter, context);
-    target.addIllegalOp<AtenIsFloatingPointOp>();
-    patterns.add<ConvertAtenIsFloatingPointOp>(typeConverter, context);
     target.addIllegalOp<RuntimeAssertOp>();
     patterns.add<ConvertRuntimeAssertOp>(typeConverter, context);
     target.addIllegalOp<AtenNeIntOp, AtenEqIntOp, AtenGtIntOp, AtenGeIntOp>();
@@ -381,8 +421,14 @@ public:
     patterns.add<ConvertTorchConstantOp<Torch::ConstantFloatOp>>(typeConverter,
                                                                  context);
     target.addIllegalOp<Torch::ConstantIntOp>();
-    patterns.add<ConvertTorchConstantOp<Torch::ConstantIntOp>>(typeConverter,
-                                                               context);
+    patterns.add<ConvertTorchConstantIntOp>(typeConverter, context);
+
+    target.addIllegalOp<AtenFloatScalarOp>();
+    patterns.add<ConvertAtenFloatScalarOp>(typeConverter, context);
+
+    target.addIllegalOp<AtenAddOp>();
+    patterns.add<ConvertAtenAddOp>(typeConverter, context);
+
     target.addIllegalOp<AtenAddIntOp, AtenSubIntOp, AtenMulIntOp>();
     patterns.add<ConvertAtenBinaryOp<AtenAddIntOp, arith::AddIOp>>(
         typeConverter, context);
@@ -400,6 +446,12 @@ public:
         typeConverter, context);
     target.addIllegalOp<AtenFloordivIntOp>();
     patterns.add<ConvertAtenBinaryOp<AtenFloordivIntOp, arith::FloorDivSIOp>>(
+        typeConverter, context);
+    target.addIllegalOp<PrimMaxIntOp>();
+    patterns.add<ConvertAtenBinaryOp<PrimMaxIntOp, arith::MaxSIOp>>(
+        typeConverter, context);
+    target.addIllegalOp<PrimMinIntOp>();
+    patterns.add<ConvertAtenBinaryOp<PrimMinIntOp, arith::MinSIOp>>(
         typeConverter, context);
     target.addIllegalOp<AtenCeilFloatOp>();
     patterns

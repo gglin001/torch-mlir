@@ -6,6 +6,28 @@ from torch_mlir_e2e_test.annotations import annotate_args, export
 
 # ==============================================================================
 
+class RandModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([1024, 512], torch.float, True)
+    ])
+    def forward(self, x):
+        size = x.size()
+        a = torch.rand(size)
+        return torch.std(a), torch.mean(a)
+
+
+@register_test_case(module_factory=lambda: RandModule())
+def RandModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(1024, 512))
+
+# ==============================================================================
+
 class UniformModule(torch.nn.Module):
 
     def __init__(self):
@@ -37,6 +59,44 @@ class UniformModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: UniformModule())
 def UniformModule_basic(module, tu: TestUtils):
+    module.forward(
+        tu.rand(256, 512, 12).double(),
+        tu.rand(512, 1024, 12).double(),
+        tu.rand(512, 256, 12).double())
+
+# ==============================================================================
+
+class UniformStaticShapeModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([256, 512, 12], torch.float64, True),
+        ([512, 1024, 12], torch.float64, True),
+        ([512, 256, 12], torch.float64, True),
+    ])
+    def forward(self, x, y, z):
+        a = torch.ops.aten.uniform_(x, 1.0, 10.0)
+        b = torch.ops.aten.uniform_(y, -20.0, -5.0)
+        c = torch.ops.aten.uniform_(z, -15.0, 3.0)
+        std = torch.cat([
+            torch.flatten(torch.std(a)),
+            torch.flatten(torch.std(b)),
+            torch.flatten(torch.std(c))
+        ])
+        mean = torch.cat([
+            torch.flatten(torch.mean(a)),
+            torch.flatten(torch.mean(b)),
+            torch.flatten(torch.mean(c))
+        ])
+        return std, mean
+
+
+@register_test_case(module_factory=lambda: UniformStaticShapeModule())
+def UniformStaticShapeModule_basic(module, tu: TestUtils):
     module.forward(
         tu.rand(256, 512, 12).double(),
         tu.rand(512, 1024, 12).double(),
@@ -215,6 +275,38 @@ def BernoulliTensorModule_basic(module, tu: TestUtils):
 
 # ==============================================================================
 
+class BernoulliPModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1], torch.float64, True),
+        ([-1, -1, -1], torch.float64, True),
+    ])
+    def forward(self, x, y):
+        a = torch.ops.aten.bernoulli(x, 0.4)
+        b = torch.ops.aten.bernoulli(y, 0.7)
+        mean = torch.cat([
+            torch.flatten(torch.mean(a)),
+            torch.flatten(torch.mean(b)),
+        ])
+        std = torch.cat([
+            torch.flatten(torch.std(a)),
+            torch.flatten(torch.std(b)),
+        ])
+        return  mean, std
+
+
+@register_test_case(module_factory=lambda: BernoulliPModule())
+def BernoulliPModule_basic(module, tu: TestUtils):
+    module.forward(
+        tu.rand(512, 512, 16).double(),
+        tu.rand(512, 512, 16).double())
+
+# ==============================================================================
+
 class RandLikeModule(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -297,6 +389,65 @@ def RandIntLowDtypeModule_basic(module, tu: TestUtils):
 
 # ==============================================================================
 
+class RandIntModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+    ])
+    def forward(self):
+        a = torch.ops.aten.randint(high=1000, size=[1024, 1024])
+        mean = torch.mean(a.to(torch.float32))
+        return mean
+
+
+@register_test_case(module_factory=lambda: RandIntModule())
+def RandIntModule_basic(module, tu: TestUtils):
+    module.forward()
+
+# ==============================================================================
+
+class RandIntDtypeModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+    ])
+    def forward(self):
+        a = torch.ops.aten.randint(high=1000, size=[128, 256, 512], dtype=torch.float64)
+        mean = torch.mean(a.to(torch.float32))
+        return mean
+
+
+@register_test_case(module_factory=lambda: RandIntDtypeModule())
+def RandIntDtypeModule_basic(module, tu: TestUtils):
+    module.forward()
+
+# ==============================================================================
+
+class RandIntPinMemoryModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+    ])
+    def forward(self):
+        a = torch.ops.aten.randint(high=1000, size=[128, 256, 512], pin_memory=False)
+        mean = torch.mean(a.to(torch.float32))
+        return mean
+
+
+@register_test_case(module_factory=lambda: RandIntPinMemoryModule())
+def RandIntPinMemoryModule_basic(module, tu: TestUtils):
+    module.forward()
+
+# ==============================================================================
 
 class RandnModule(torch.nn.Module):
 
@@ -367,6 +518,30 @@ def RandnGeneratorModule_basic(module, tu: TestUtils):
 
 
 # ==============================================================================
+
+
+class RandnGeneratorF64Module(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+    ])
+    def forward(self):
+        a = torch.ops.aten.randn([4, 512, 1024], generator=None, dtype=torch.float64)
+        std = torch.std(a)
+        return std
+
+
+@register_test_case(module_factory=lambda: RandnGeneratorF64Module())
+def RandnGeneratorF64Module_basic(module, tu: TestUtils):
+    module.forward()
+
+
+# ==============================================================================
+
 
 class RandnLikeModule(torch.nn.Module):
     def __init__(self):

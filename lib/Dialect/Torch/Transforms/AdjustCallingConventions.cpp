@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
@@ -186,66 +187,21 @@ public:
 };
 } // namespace
 
-static bool isValidNonContainerResultType(Type resultType) {
-  return resultType.isa<Torch::BaseTensorType>() ||
-         resultType.isa<Torch::FloatType>() ||
-         resultType.isa<Torch::IntType>() ||
-         resultType.isa<Torch::BoolType>() ||
-         resultType.isa<Torch::NoneType>();
-}
-
-static LogicalResult validateReturns(func::FuncOp func) {
-  if (func.getResultTypes().size() > 1) {
-    return func->emitError(
-      "Functions directly imported from Python should only ever return one "
-      "item. Multiple return values are returned as a tuple.");
-  }
-
-  // Allow returns of nothing. This shouldn't be possible from Python, but it
-  // can happen in IR that's been directly constructed.
-  if (func.getResultTypes().size() == 0)
-    return success();
-
-  const auto& resultType = func.getResultTypes().front();
-
-  // Allow single tensor, scalar, and bool returns
-  if (isValidNonContainerResultType(resultType)) {
-    return success();
-  }
-
-  // Allow multi-tensor/scalar/bool tuple returns
-  if (auto tuple = resultType.dyn_cast<Torch::TupleType>()) {
-    const auto& containedTypes = tuple.getContainedTypes();
-    bool containsValidTypes = llvm::all_of(
-      tuple.getContainedTypes(), isValidNonContainerResultType);
-    if (containedTypes.size() >= 2 && containsValidTypes) {
-      return success();
-    }
-  }
-
-  return func->emitError(
-    "Functions must return a single tensor-like value, multiple tensor-like "
-    "values, or a tuple of more than one tensor-like value. Tensor-like "
-    "values: tensors, scalars, bools, and Nones.");
-}
-
 static LogicalResult adjustCallingConventions(func::FuncOp func,
                                               TypeBoundMap &typeBoundMap) {
-  if (failed(validateReturns(func)))
-      return failure();
   MLIRContext *context = func.getContext();
   RewritePatternSet patterns(context);
   TypeConverter typeConverter;
   typeConverter.addConversion([](Type type) { return type; });
   typeConverter.addConversion(
       [](Torch::TupleType type,
-         SmallVectorImpl<Type> &types) -> Optional<LogicalResult> {
+         SmallVectorImpl<Type> &types) -> LogicalResult {
         llvm::append_range(types, type.getContainedTypes());
         return success();
       });
   typeConverter.addConversion(
       [](Torch::NoneType type,
-         SmallVectorImpl<Type> &types) -> Optional<LogicalResult> {
+         SmallVectorImpl<Type> &types) -> LogicalResult {
         return success();
       });
 

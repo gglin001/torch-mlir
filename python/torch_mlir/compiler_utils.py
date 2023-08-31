@@ -23,13 +23,7 @@ def get_module_name_for_debug_dump(module):
 
 
 class TorchMlirCompilerError(Exception):
-    def __init__(self, value: str):
-        super().__init__()
-        self.value = value
-
-    def __str__(self) -> str:
-        return self.value
-
+    pass
 
 def run_pipeline_with_repro_report(module,
                                    pipeline: str,
@@ -44,7 +38,7 @@ def run_pipeline_with_repro_report(module,
         # Lower module in place to make it ready for compiler backends.
         with module.context:
             pm = PassManager.parse(pipeline)
-            pm.run(module)
+            pm.run(module.operation)
     except Exception as e:
         # TODO: More robust.
         # - don't arbitrarily clutter up /tmp. When a test suite has many
@@ -65,6 +59,8 @@ def run_pipeline_with_repro_report(module,
             {description} failed with the following diagnostics:
             {sys.stderr.getvalue()}
 
+            python exception: {e}
+            
             For Torch-MLIR developers, the error can be reproduced with:
             $ torch-mlir-opt -pass-pipeline='{pipeline}' {filename}
             Add '{debug_options}' to get the IR dump for debugging purpose.

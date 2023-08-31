@@ -5,7 +5,8 @@
 
 import inspect
 import re
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any, Dict
+import codecs
 
 import torch
 
@@ -14,7 +15,56 @@ from torch_mlir.passmanager import PassManager
 
 from .registry import Registry
 
-def get_dtype_of_scalar(scalar: Union[int, float]) -> int:
+def all_integer_dtypes() -> List[int]:
+    return [torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64]
+
+def is_integer_dtype(dtype: int) -> bool:
+    return dtype in all_integer_dtypes()
+
+def all_complex_dtypes() -> List[int]:
+    return [torch.complex64, torch.complex128]
+
+def is_complex_dtype(dtype: int) -> bool:
+    return dtype in all_complex_dtypes()
+
+def all_float_dtypes() -> List[int]:
+    return [torch.float16, torch.bfloat16, torch.float32, torch.float64]
+
+def is_float_dtype(dtype: int) -> bool:
+    return dtype in all_float_dtypes()
+
+def get_priority_of_dtype(dtype: int) -> int:
+    # If a loop is used to iterate over a list of sorted dtypes, TorchScript
+    # produces a loop with INT64_MAX max trip count, which causes problems
+    # during the loop unrolling that takes place when simplifying the dtype
+    # functions. Therefore, here we resort to `if`s.
+    if dtype == torch.bool:
+        return 0
+    if dtype == torch.uint8:
+        return 1
+    if dtype == torch.int8:
+        return 2
+    if dtype == torch.int16:
+        return 3
+    if dtype == torch.int32:
+        return 4
+    if dtype == torch.int64:
+        return 5
+    if dtype == torch.bfloat16:
+        return 6
+    if dtype == torch.float16:
+        return 7
+    if dtype == torch.float32:
+        return 8
+    if dtype == torch.float64:
+        return 9
+    if dtype == torch.complex64:
+        return 10
+    if dtype == torch.complex128:
+        return 11
+    assert False, "Cannot determine priority of dtype"
+
+def get_dtype_of_scalar(scalar: Union[int, float, complex]) -> int:
     # This is hacky. `NumToTensor` is the only PyTorch op for scalars
     # that when `jit.script`ed converts a float scalar to a tensor
     # with dtype that corresponds to Python's `float`.
@@ -138,25 +188,30 @@ def _verify_signature_matches_registry(f, registry: Registry):
     atoms = function_name.split("〇")
     if len(atoms) == 2:
         atoms += [""]
-    operator = registry.get_by_triple(tuple(atoms))
+    try:
+        operator = registry.get_by_triple(tuple(atoms))
+    except KeyError as e:
+        raise ValueError(f"Unable to find op {'.'.join(atoms)} in registry")
     if function_kind == "shape":
         expected_signature = operator.get_shape_function_signature()
     elif function_kind == "dtype":
         expected_signature = operator.get_dtype_function_signature()
     elif function_kind == "decomposition":
         expected_signature = operator.get_decomposition_function_signature()
+    elif function_kind == "has_value_semantics":
+        expected_signature = operator.get_has_value_semantics_function_signature()
     else:
         raise ValueError(f"Invalid Op signature function kind: '{function_kind}'")
     if signature != expected_signature:
         raise ValueError(f"Signature mismatch for {f.__name__!r}: expected {expected_signature!r}, got {signature!r}")
 
-def generate_library(globals_) -> str:
-    """Convert all op functions in `globals()` into MLIR."""
+def generate_library(functions: Dict[str, Any]) -> str:
+    """Convert all op functions in `functions` into MLIR."""
     mb = ModuleBuilder()
     # We use the registry to ensure that the shape functions are consistent
     # with the ops.
     registry = Registry.load()
-    for k, v in globals_.items():
+    for k, v in functions.items():
         if "〇" not in k:
             continue
         if not hasattr(v, "_not_present_in_registry"):
@@ -173,17 +228,29 @@ def generate_library(globals_) -> str:
         mb.import_function(function)
     # Clean up the IR a bit before writing it out.
     pm = PassManager.parse("builtin.module(canonicalize)", context=mb.module.context)
-    pm.run(mb.module)
+    pm.run(mb.module.operation)
     # Munge the IR a bit to make it more systematically accessible.
     asm = mb.module.operation.get_asm()
     # We'd like a unique function prefix to avoid collisions with user-
     # defined symbols. Since all of our shape functions conveniently have
     # a `〇` in them, we replace the torch namespace with our prefix. E.g.:
     # __torch__.aten〇add〇Scalar -> __torch_mlir_shape_fn.aten〇add〇Scalar
-    asm = re.sub(r"__torch__\.([^.(]+)\\E3\\80\\87([^.(]+)\\E3\\80\\A1([^.(\"]+)",
-                 r"__torch_mlir_\3_fn.\1\\E3\\80\\87\2",
+
+    # Encoding for: 〇
+    circle = r"\\E3\\80\\87"
+    # Encoding for: 〡
+    line = r"\\E3\\80\\A1"
+    name = r"[^.(]+"
+    # Sometimes PyTorch will insert namespaces to the function name in
+    # the format: `__torch__.{namespace_1}.{namespace_2}...{op_name}`
+    # The extra namespaces are not part of the abstract interpretation
+    # function name, so here we simply drop the extra namespaces.
+    namespace = fr"(?:{name}\.)"
+
+    asm = re.sub(fr'@"__torch__\.{namespace}*({name}){circle}({name}){line}({name})"',
+                 fr'@"__torch_mlir_\3_fn.\1{circle}\2"',
                  asm)
 
     # Put the `〇` back to a regular `.`.
-    asm = asm.replace("\\E3\\80\\87", ".")
+    asm = asm.replace(codecs.decode(circle, "unicode_escape"), ".")
     return asm

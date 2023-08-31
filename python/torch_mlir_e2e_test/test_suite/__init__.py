@@ -6,10 +6,23 @@
 # Lists of tests that fail to even reach the backends.
 # These represent further work needed in torch-mlir to lower them properly
 # to the backend contract.
+
+from torch_mlir._version import torch_version_for_comparison, version
+
 COMMON_TORCH_MLIR_LOWERING_XFAILS = {
+    "NativeGroupNormModule_basic",
+    "NativeGroupNormBackwardModule_basic",
     "QuantizedMLP_basic",
-    "NormalizeModule_basic",
+    "ReduceMaxAlongDimUnsignedInt_basic",
 }
+
+# TODO: Delete once torch 2.1.0 is released
+if torch_version_for_comparison() < version.parse("2.1.0.dev"):
+    COMMON_TORCH_MLIR_LOWERING_XFAILS.update({
+        "ScaledDotProductAttentionDifferentModule_basic",
+        "ScaledDotProductAttentionSameModule_basic"
+    })
+
 
 def register_all_tests():
     """Registers all the built-in E2E tests that Torch-MLIR provides."""
@@ -41,7 +54,7 @@ def register_all_tests():
     from . import histogram_binning_calibration
     from . import rng
     from . import cast
-    from . import index_put
+    from . import scatter
     from . import pooling
     from . import return_types
     from . import control_flow

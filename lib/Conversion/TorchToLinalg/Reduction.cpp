@@ -81,9 +81,21 @@ public:
 
     Type inElementType = inputType.getElementType();
     if (!inElementType.isa<mlir::FloatType>()) {
-      return rewriter.notifyMatchFailure(
-          maxDimOp,
-          "aten.max_dim to linalg.* requires Float input element type");
+      if (inElementType.isa<mlir::IntegerType>()) {
+        auto integerTy = maxDimOp.getSelf()
+                             .getType()
+                             .cast<BaseTensorType>()
+                             .getDtype()
+                             .dyn_cast<mlir::IntegerType>();
+        if (integerTy.isUnsigned())
+          return rewriter.notifyMatchFailure(
+              maxDimOp, "aten.max_dim to linalg.* requires input element type "
+                        "to be signed in case of integer");
+      } else {
+        return rewriter.notifyMatchFailure(
+            maxDimOp, "aten.max_dim to linalg.* requires Float or Integer "
+                      "input element type");
+      }
     }
 
     // Constant op to account for the reduction along dim.
@@ -104,13 +116,23 @@ public:
     Value initTensorMax = rewriter.create<tensor::EmptyOp>(
         loc, getAsOpFoldResult(resultShape), inElementType);
 
-    FloatAttr fillValueMaxAttr = rewriter.getFloatAttr(
-        inElementType,
-        APFloat::getLargest(
-            inElementType.cast<mlir::FloatType>().getFloatSemantics(), true));
+    Value fillValueMax;
+    if (inElementType.isa<mlir::FloatType>()) {
+      fillValueMax = rewriter.create<arith::ConstantOp>(
+          loc,
+          rewriter.getFloatAttr(
+              inElementType,
+              APFloat::getInf(
+                  inElementType.cast<mlir::FloatType>().getFloatSemantics(),
+                  /*Negative=*/true)));
+    } else {
+      fillValueMax = rewriter.create<arith::ConstantOp>(
+          loc, rewriter.getIntegerAttr(
+                   inElementType,
+                   APSInt::getSignedMinValue(
+                       inElementType.cast<mlir::IntegerType>().getWidth())));
+    }
 
-    Value fillValueMax =
-        rewriter.create<arith::ConstantOp>(loc, fillValueMaxAttr);
     Value filledTensorMax =
         rewriter.create<linalg::FillOp>(loc, fillValueMax, initTensorMax)
             .result();
@@ -152,10 +174,18 @@ public:
               nestedLoc, oldIndex.getType(),
               rewriter.create<linalg::IndexOp>(loc, dim));
 
-          auto resultMax = rewriter.create<arith::MaxFOp>(
-              nestedLoc, newValue, oldValue);
-          Value predicate = rewriter.create<arith::CmpFOp>(
-              nestedLoc, arith::CmpFPredicate::OGT, newValue, oldValue);
+          Value resultMax, predicate;
+          if (inElementType.isa<mlir::FloatType>()) {
+            resultMax =
+                rewriter.create<arith::MaxFOp>(nestedLoc, newValue, oldValue);
+            predicate = rewriter.create<arith::CmpFOp>(
+                nestedLoc, arith::CmpFPredicate::OGT, newValue, oldValue);
+          } else {
+            resultMax =
+                rewriter.create<arith::MaxSIOp>(nestedLoc, newValue, oldValue);
+            predicate = rewriter.create<arith::CmpIOp>(
+                nestedLoc, arith::CmpIPredicate::sgt, newValue, oldValue);
+          }
           auto resultIndex = rewriter.create<arith::SelectOp>(
               nestedLoc, predicate, newIndex, oldIndex);
           nestedBuilder.create<linalg::YieldOp>(
@@ -183,7 +213,7 @@ static Value createInitElementForReduceOp(OpBuilder &b, Location loc,
       return b.create<arith::ConstantOp>(
           loc, b.getFloatAttr(
                    elementType,
-                   APFloat::getLargest(
+                   APFloat::getInf(
                        elementType.cast<mlir::FloatType>().getFloatSemantics(),
                        /*Negative=*/true)));
     else if (elementType.isa<mlir::IntegerType>() &&
@@ -191,6 +221,22 @@ static Value createInitElementForReduceOp(OpBuilder &b, Location loc,
       return b.create<arith::ConstantOp>(
           loc, b.getIntegerAttr(elementType,
                                 APSInt::getSignedMinValue(
+                                    elementType.getIntOrFloatBitWidth())));
+  }
+
+  if (isa<AtenMinOp>(op)) {
+    if (elementType.isa<mlir::FloatType>())
+      return b.create<arith::ConstantOp>(
+          loc, b.getFloatAttr(
+                   elementType,
+                   APFloat::getInf(
+                       elementType.cast<mlir::FloatType>().getFloatSemantics(),
+                       /*Negative=*/false)));
+    else if (elementType.isa<mlir::IntegerType>() &&
+             elementType.getIntOrFloatBitWidth() != 8)
+      return b.create<arith::ConstantOp>(
+          loc, b.getIntegerAttr(elementType,
+                                APSInt::getSignedMaxValue(
                                     elementType.getIntOrFloatBitWidth())));
   }
 
@@ -231,6 +277,23 @@ static Value createLinalgPayloadForReduceOp(OpBuilder &b, Location loc,
       if (intType.isSigned())
         return b.create<arith::MaxSIOp>(loc, self, result);
     }
+  } else if (auto min = dyn_cast<AtenMinOp>(op)) {
+    Value self =
+        convertScalarToDtype(b, loc, payloadArgs[0], resultElementType);
+    Value result = payloadArgs[1];
+    if (resultElementType.isa<mlir::FloatType>())
+      return b.create<arith::MinFOp>(loc, self, result);
+    else if (resultElementType.isa<mlir::IntegerType>()) {
+      IntegerType intType = min.getSelf()
+                                .getType()
+                                .cast<BaseTensorType>()
+                                .getDtype()
+                                .dyn_cast<mlir::IntegerType>();
+      if (intType.isUnsigned())
+        return b.create<arith::MinUIOp>(loc, self, result);
+      if (intType.isSigned())
+        return b.create<arith::MinSIOp>(loc, self, result);
+    }
   } else if (isa<AtenLinalgVectorNormOp>(op)) {
     // This creates payload for only the first of the two linalg.generic ops.
     // TODO: Short-circuit operations if `ord` is zero or one.
@@ -247,7 +310,7 @@ static Value createLinalgPayloadForReduceOp(OpBuilder &b, Location loc,
     Value result = payloadArgs[1];
     Value self = convertScalarToDtype(b, loc, elem, resultElementType);
     auto abs = b.create<math::AbsFOp>(loc, self);
-    Attribute twoAttr = b.getFloatAttr(resultElementType, 2.0);
+    TypedAttr twoAttr = b.getFloatAttr(resultElementType, 2.0);
     auto ord = b.create<arith::ConstantOp>(loc, twoAttr);
     auto pow = b.create<math::PowFOp>(loc, abs, ord);
     return b.create<arith::AddFOp>(loc, pow, result);
@@ -310,11 +373,11 @@ private:
                          ConversionPatternRewriter &rewriter) const {
     auto opInfo = torch_to_linalg::ReductionOpInfo{false, Value{}, {}};
 
-    if (isa<AtenMaxOp, AtenSumOp>(op)) {
+    if (isa<AtenMaxOp, AtenMinOp, AtenSumOp>(op)) {
       opInfo.tensorOperand = operands[0];
       auto inputType = opInfo.tensorOperand.getType().cast<RankedTensorType>();
 
-      // `AtenSumOp` and `AtenMaxOp` reduces along all the dimensions of the
+      // `AtenSumOp`, `AtenMaxOp`, and `AtenMinOp` each reduce along all the dimensions of the
       // input tensor.
       for (int64_t i = 0; i < inputType.getRank(); i++)
         opInfo.dimSet.insert(i);
@@ -373,7 +436,7 @@ private:
       return rewriter.notifyMatchFailure(op, "unimplemented: ord = +/- inf");
 
     // Raise each summed value to the inverse of the order of the norm.
-    Attribute oneAttr = rewriter.getFloatAttr(elemType, 1.0);
+    TypedAttr oneAttr = rewriter.getFloatAttr(elemType, 1.0);
     auto oneValue = rewriter.create<arith::ConstantOp>(loc, oneAttr);
     auto inverseOrdValue =
         rewriter.create<arith::DivFOp>(loc, oneValue, ordValue);
@@ -490,6 +553,7 @@ void mlir::torch::torch_to_linalg::populateReductionPatternsAndLegality(
   target.addIllegalOp<AtenSumOp>();
   target.addIllegalOp<AtenSumDimIntListOp>();
   target.addIllegalOp<AtenMaxOp>();
+  target.addIllegalOp<AtenMinOp>();
   target.addIllegalOp<AtenLinalgVectorNormOp>();
   target.addIllegalOp<AtenFrobeniusNormDimOp>();
   patterns.add<ConvertReductionOp>(typeConverter, context);

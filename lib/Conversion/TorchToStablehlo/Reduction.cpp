@@ -11,10 +11,10 @@
 
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
-#include "StablehloLegalizeUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
@@ -22,6 +22,7 @@
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionOps.h"
+#include "torch-mlir/Conversion/TorchToStablehlo/StablehloLegalizeUtils.h"
 
 using namespace mlir;
 using namespace mlir::torch;
@@ -31,7 +32,8 @@ using namespace mlir::torch::torch_to_stablehlo;
 static Value createInitialValueForReduceOp(Operation *op, Type elementTy,
                                            PatternRewriter &rewriter) {
   auto constType = RankedTensorType::get({}, elementTy);
-  if (isa<AtenSumOp, AtenSumDimIntListOp, AtenFrobeniusNormDimOp>(op)) {
+  if (isa<AtenSumOp, AtenSumDimIntListOp, AtenFrobeniusNormDimOp,
+          AtenLinalgVectorNormOp>(op)) {
     if (elementTy.isa<mlir::FloatType>()) {
       auto constAttr = DenseElementsAttr::get(
           constType, {APFloat::getZero(
@@ -51,7 +53,7 @@ static Value createInitialValueForReduceOp(Operation *op, Type elementTy,
   if (isa<AtenMaxOp, AtenMaxDimOp, AtenArgmaxOp>(op)) {
     if (elementTy.isa<mlir::FloatType>()) {
       auto constAttr = DenseElementsAttr::get(
-          constType, {APFloat::getLargest(
+          constType, {APFloat::getInf(
                          elementTy.cast<mlir::FloatType>().getFloatSemantics(),
                          /*negative=*/true)});
       return rewriter.create<stablehlo::ConstantOp>(op->getLoc(), constType,
@@ -61,6 +63,24 @@ static Value createInitialValueForReduceOp(Operation *op, Type elementTy,
       auto constAttr = DenseElementsAttr::get(
           constType,
           {APInt::getSignedMinValue(elementTy.getIntOrFloatBitWidth())});
+      return rewriter.create<stablehlo::ConstantOp>(op->getLoc(), constType,
+                                                    constAttr);
+    }
+  }
+
+  if (isa<AtenMinOp>(op)) {
+    if (elementTy.isa<mlir::FloatType>()) {
+      auto constAttr = DenseElementsAttr::get(
+          constType, {APFloat::getInf(
+                         elementTy.cast<mlir::FloatType>().getFloatSemantics(),
+                         /*negative=*/false)});
+      return rewriter.create<stablehlo::ConstantOp>(op->getLoc(), constType,
+                                                    constAttr);
+    } else if (elementTy.isa<mlir::IntegerType>() &&
+               elementTy.getIntOrFloatBitWidth() != 8) {
+      auto constAttr = DenseElementsAttr::get(
+          constType,
+          {APInt::getSignedMaxValue(elementTy.getIntOrFloatBitWidth())});
       return rewriter.create<stablehlo::ConstantOp>(op->getLoc(), constType,
                                                     constAttr);
     }
@@ -96,9 +116,6 @@ getMaxInDim(ConversionPatternRewriter &rewriter, Operation *op, Value &input,
     initIndex = hlo::getConstTensor<int64_t>(rewriter, op, {0}, {}).value();
   }
 
-  DenseIntElementsAttr dimensions = DenseIntElementsAttr::get(
-      RankedTensorType::get({}, rewriter.getI64Type()), dim);
-
   auto inputShapeTensor = rewriter.create<mlir::tensor::FromElementsOp>(
       op->getLoc(), inputShapeVec);
   auto indexTensor = rewriter.create<stablehlo::DynamicIotaOp>(
@@ -113,7 +130,7 @@ getMaxInDim(ConversionPatternRewriter &rewriter, Operation *op, Value &input,
           initValue,
           initIndex,
       },
-      dimensions);
+      rewriter.getI64TensorAttr(dim));
 
   Block &block = stablehloReduceOp.getBody().emplaceBlock();
 
@@ -482,6 +499,68 @@ LogicalResult ConvertAtenReductionOp<AtenMaxOp>::matchAndRewrite(
 }
 } // namespace
 
+// AtenMinOp
+namespace {
+template <>
+LogicalResult ConvertAtenReductionOp<AtenMinOp>::matchAndRewrite(
+    AtenMinOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  Value input = adaptor.getSelf();
+  auto inputTy = input.getType().dyn_cast<RankedTensorType>();
+  if (!inputTy) {
+    return rewriter.notifyMatchFailure(
+        op, "only Tensor types supported in StableHLO");
+  }
+  auto inputElemTy = inputTy.getElementType();
+  if (!inputElemTy.isIntOrFloat()) {
+    return op.emitError(
+        "only floating-point or integer datatype legalization supported");
+  }
+  // Currently, (u)int8 dtype is not supported
+  if (inputElemTy.isa<mlir::IntegerType>() &&
+      inputElemTy.getIntOrFloatBitWidth() == 8) {
+    return rewriter.notifyMatchFailure(
+        op, "IntegerType with bitwidth 8 unsupported in convertion from "
+            "AtenMinOp to StableHLO");
+  }
+
+  SmallVector<int64_t> dims;
+  for (int64_t i = 0; i < inputTy.getRank(); i++) {
+    dims.push_back(i);
+  }
+
+  Value initValue =
+      createInitialValueForReduceOp(op, inputTy.getElementType(), rewriter);
+  if (!initValue)
+    return failure();
+  llvm::sort(dims.begin(), dims.end());
+  auto stablehloReduceOp = rewriter.create<stablehlo::ReduceOp>(
+      op.getLoc(), input, initValue, rewriter.getI64TensorAttr(dims));
+
+  Block &block = stablehloReduceOp.getBody().emplaceBlock();
+  auto blockArgumentTy = RankedTensorType::get({}, inputTy.getElementType());
+
+  block.addArgument(blockArgumentTy, op->getLoc());
+  block.addArgument(blockArgumentTy, op->getLoc());
+
+  auto *firstArgument = block.args_begin();
+  auto secondArgument = block.args_rbegin();
+
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&block);
+    Value minResult = rewriter.create<stablehlo::MinOp>(
+        op->getLoc(), blockArgumentTy, *firstArgument, *secondArgument);
+    rewriter.create<stablehlo::ReturnOp>(op->getLoc(), minResult);
+  }
+
+  rewriter.replaceOpWithNewOp<tensor::CastOp>(
+      op, getTypeConverter()->convertType(op.getType()),
+      stablehloReduceOp.getResults());
+  return success();
+}
+} // namespace
+
 // AtenSumDimIntListOp
 namespace {
 template <>
@@ -597,8 +676,7 @@ LogicalResult ConvertAtenReductionOp<AtenSumDimIntListOp>::matchAndRewrite(
 
 // AtenFrobeniusNormDimOp
 // aten.frobenius_norm.dim => stablehlo.reduce(calculate square sum along given
-// dims)
-//                            + stablehlo.sqrt
+// dims) + stablehlo.sqrt
 namespace {
 template <>
 LogicalResult ConvertAtenReductionOp<AtenFrobeniusNormDimOp>::matchAndRewrite(
@@ -702,6 +780,132 @@ LogicalResult ConvertAtenReductionOp<AtenFrobeniusNormDimOp>::matchAndRewrite(
 }
 } // namespace
 
+// AtenLinalgVectorNormOp
+namespace {
+template <>
+LogicalResult ConvertAtenReductionOp<AtenLinalgVectorNormOp>::matchAndRewrite(
+    AtenLinalgVectorNormOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  const TorchToStablehloOptions &options = getOptions();
+
+  Value input = adaptor.getSelf();
+  auto inputType = input.getType().dyn_cast<RankedTensorType>();
+  if (!inputType) {
+    return op.emitError(
+        "only ranked tensor input supported in AtenLinalgVectorNormOp");
+  }
+  int64_t inputRank = inputType.getRank();
+
+  auto outType =
+      getTypeConverter()->convertType(op.getType()).cast<RankedTensorType>();
+  auto outElemType = outType.getElementType();
+  if (!outElemType.isa<mlir::FloatType>()) {
+    return op.emitError("only float dtype allowed in AtenLinalgVectorNormOp");
+  }
+
+  if (inputType.getElementType() != outType.getElementType()) {
+    input =
+        rewriter.create<stablehlo::ConvertOp>(op->getLoc(), input, outElemType);
+  }
+
+  Value ord =
+      hlo::scalarToStablehloTensor(rewriter, op, adaptor.getOrd(), outElemType);
+
+  SmallVector<int64_t> dims;
+  if (failed(checkNotNone(rewriter, op, op.getDim()))) {
+    dims = llvm::to_vector<4>(llvm::seq<int64_t>(0, inputRank));
+  } else {
+    if (!matchPattern(op.getDim(), m_TorchListOfConstantInts(dims))) {
+      return rewriter.notifyMatchFailure(
+          op, "non-const integer `dim` is not supported");
+    }
+
+    for (auto &dim : dims) {
+      dim = toPositiveDim(dim, inputRank);
+      if (!isValidDim(dim, inputRank)) {
+        return rewriter.notifyMatchFailure(
+            op, "invalid dimension detected in `dim`");
+      }
+    }
+    // Sort the dims in ascending order, making the conversion
+    // stable with unordered dims.
+    std::sort(dims.begin(), dims.end());
+  }
+
+  bool keepDim = false;
+  if (!matchPattern(op.getKeepdim(), m_TorchConstantBool(&keepDim))) {
+    return rewriter.notifyMatchFailure(
+        op, "non-const bool `keepdim` is not supported");
+  }
+
+  auto initValue = createInitialValueForReduceOp(op, outElemType, rewriter);
+  if (!initValue) {
+    return failure();
+  }
+
+  Value absValue = rewriter.create<stablehlo::AbsOp>(op->getLoc(), input);
+  Value powValue = rewriter.create<chlo::BroadcastPowOp>(op->getLoc(), absValue,
+                                                         ord, nullptr);
+
+  auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+      op->getLoc(), powValue, initValue, rewriter.getI64TensorAttr(dims));
+
+  Region &region = reduceOp.getBody();
+  Block &block = region.emplaceBlock();
+  auto blockArgumentTy = RankedTensorType::get({}, outElemType);
+
+  block.addArgument(blockArgumentTy, op->getLoc());
+  block.addArgument(blockArgumentTy, op->getLoc());
+
+  auto firstArgument = *block.args_begin();
+  auto secondArgument = *block.args_rbegin();
+
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&block);
+
+    auto addResult = rewriter.create<stablehlo::AddOp>(
+        op->getLoc(), firstArgument, secondArgument);
+    rewriter.create<stablehlo::ReturnOp>(op->getLoc(), addResult.getResult());
+  }
+  auto constantOne = rewriter.create<stablehlo::ConstantOp>(
+      op->getLoc(), blockArgumentTy,
+      DenseElementsAttr::get(
+          blockArgumentTy,
+          APFloat(outElemType.cast<mlir::FloatType>().getFloatSemantics(), 1)));
+  auto reciprocalOrd = rewriter.create<stablehlo::DivOp>(
+      op->getLoc(), blockArgumentTy, constantOne, ord);
+  auto output = rewriter.create<chlo::BroadcastPowOp>(
+      op->getLoc(), reduceOp.getResult(0), reciprocalOrd, nullptr);
+
+  if (keepDim) {
+    auto outShapeInfo =
+        hlo::getDimSizesOfTensor(rewriter, op, input, options.dimSizeIndexBits);
+    if (failed(outShapeInfo)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to get dimension sizes of the input");
+    }
+    auto outShapeVec = *outShapeInfo;
+    auto one = rewriter.create<mlir::arith::ConstantOp>(
+        op->getLoc(),
+        rewriter.getIntegerAttr(
+            rewriter.getIntegerType(options.dimSizeIndexBits), 1));
+    for (int64_t i : dims) {
+      outShapeVec[i] = one;
+    }
+    auto outShapeTensor = rewriter.create<mlir::tensor::FromElementsOp>(
+        op->getLoc(), outShapeVec);
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicReshapeOp>(
+        op, getTypeConverter()->convertType(op.getType()), output,
+        outShapeTensor);
+    return success();
+  }
+
+  rewriter.replaceOp(op, output.getResult());
+  return success();
+}
+} // namespace
+
 void mlir::torch::torch_to_stablehlo::populateReductionOpPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
     ConversionTarget &target, const TorchToStablehloOptions &options) {
@@ -714,6 +918,8 @@ void mlir::torch::torch_to_stablehlo::populateReductionOpPatternsAndLegality(
   INSERT_ATEN_REDUCTION_OP_PATTERN(AtenSumDimIntListOp);
   INSERT_ATEN_REDUCTION_OP_PATTERN(AtenSumOp);
   INSERT_ATEN_REDUCTION_OP_PATTERN(AtenMaxOp);
+  INSERT_ATEN_REDUCTION_OP_PATTERN(AtenMinOp);
   INSERT_ATEN_REDUCTION_OP_PATTERN(AtenFrobeniusNormDimOp);
+  INSERT_ATEN_REDUCTION_OP_PATTERN(AtenLinalgVectorNormOp);
 #undef INSERT_ATEN_REDUCTION_OP_PATTERN
 }

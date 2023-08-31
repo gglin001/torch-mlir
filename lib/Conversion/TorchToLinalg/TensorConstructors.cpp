@@ -106,7 +106,7 @@ public:
     }
 
     Location loc = op.getLoc();
-    TypeConverter *typeConverter = this->getTypeConverter();
+    const TypeConverter *typeConverter = this->getTypeConverter();
     SmallVector<Value> resultSizeTorchInt, resultSize, resultSizeIndex;
     if (!getListConstructElements(op.getSize(), resultSizeTorchInt)) {
       return rewriter.notifyMatchFailure(
@@ -211,7 +211,7 @@ public:
     }
 
     Location loc = op.getLoc();
-    TypeConverter *typeConverter = this->getTypeConverter();
+    const TypeConverter *typeConverter = this->getTypeConverter();
     SmallVector<Value> resultSizeTorchInt, resultSize, resultSizeIndex;
     if (!getListConstructElements(op.getSize(), resultSizeTorchInt)) {
       return rewriter.notifyMatchFailure(
@@ -226,7 +226,8 @@ public:
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
     Type resultElementType;
     if (op.getDtype().getType().isa<Torch::NoneType>()) {
-      resultElementType = resultType.getElementType();
+      resultElementType = getDefaultDtypeForTorchScalar(
+          Torch::FloatType::get(op->getContext()));
     } else {
       int64_t dtypeInt;
       if (!matchPattern(op.getDtype(), m_TorchConstantInt(&dtypeInt)))
@@ -281,7 +282,7 @@ public:
     }
 
     Location loc = op.getLoc();
-    TypeConverter *typeConverter = this->getTypeConverter();
+    const TypeConverter *typeConverter = this->getTypeConverter();
     RankedTensorType resultType =
         typeConverter->convertType(op->getResult(0).getType())
             .cast<RankedTensorType>();

@@ -685,6 +685,24 @@ def NewZerosModuleFalsePinMemory_basic(module, tu: TestUtils):
     module.forward(tu.randint(2, 3, high=10))
 
 
+class NewZerosStaticModuleLayoutStrided(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([1, 4], torch.int64, True),
+    ])
+    def forward(self, a):
+        return a.new_zeros(a.shape)
+
+
+@register_test_case(module_factory=lambda: NewZerosStaticModuleLayoutStrided())
+def NewZerosStaticModuleLayoutStrided_basic(module, tu: TestUtils):
+    module.forward(tu.randint(1, 4, high=10))
+
 # ==============================================================================
 
 
@@ -1095,7 +1113,7 @@ class ZeroFloat32Module(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: ZeroFloat32Module())
 def ZeroFloat32Module_basic(module, tu: TestUtils):
-    module.forward(torch.rand(3, 2))
+    module.forward(tu.rand(3, 2))
 
 
 class ZeroInt32Module(torch.nn.Module):
@@ -1378,6 +1396,27 @@ class MaskedFillScalarFloatValueModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: MaskedFillScalarFloatValueModule())
 def MaskedFillScalarFloatValueModule_basic(module, tu: TestUtils):
+    module.forward(tu.randint(2, 3, low=-10, high=10),
+                   tu.randint(2, 3, high=2).to(dtype=torch.bool))
+
+
+class MaskedFillScalarFloatValueStaticModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([2, 3], torch.int64, True),
+        ([2, 3], torch.bool, True),
+    ])
+    def forward(self, x, mask):
+        return torch.ops.aten.masked_fill(x, mask, value=-0.01)
+
+
+@register_test_case(module_factory=lambda: MaskedFillScalarFloatValueStaticModule())
+def MaskedFillScalarFloatValueStaticModule_basic(module, tu: TestUtils):
     module.forward(tu.randint(2, 3, low=-10, high=10),
                    tu.randint(2, 3, high=2).to(dtype=torch.bool))
 

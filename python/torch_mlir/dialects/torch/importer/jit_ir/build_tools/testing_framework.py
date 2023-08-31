@@ -60,33 +60,32 @@ class TensorOfShape:
     This class also tracks a dtype of the tensor, since some ops require a
     specific dtype.
     """
-    def __init__(self, *shape: int, dtype: torch.dtype = torch.float32):
+    def __init__(self, *shape: int, dtype: torch.dtype = torch.float32,
+                 device: Optional[torch.device] = None):
         self.shape = list(shape)
         self.dtype = dtype
+        self.device = "meta" if device is None else device
     def __repr__(self):
         args_str = ", ".join(repr(x) for x in self.shape)
-        if self.dtype is torch.float32:
-            return f"TensorOfShape({args_str})"
-        else:
-            return f"TensorOfShape({args_str}, dtype={self.dtype})"
+        return f"TensorOfShape({args_str}, dtype={self.dtype}, device={self.device})"
 
 def LongTensorOfShape(*args, **kwargs):
     """Helper for indicating a TensorOfShape with integer type."""
     return TensorOfShape(*args, **kwargs, dtype=torch.long)
 
-def NonZeroDTensorWithDtype(dtype):
+def NonZeroDTensorWithDtype(dtype, device: Optional[torch.device] = None):
     """Helper for indicating a non-zero dim tensor with custom type."""
-    return TensorOfShape(1, dtype=dtype)
+    return TensorOfShape(1, dtype=dtype, device=device)
 
-def ZeroDTensorWithDtype(dtype):
+def ZeroDTensorWithDtype(dtype, device: Optional[torch.device] = None):
     """Helper for indicating a zero dim tensor with custom type."""
-    return TensorOfShape(dtype=dtype)
+    return TensorOfShape(dtype=dtype, device=device)
 
 def _recursively_transform_tensor_args(
         o: Any,
         tensor_transformer: Callable[[TensorOfShape], Any]) -> Any:
     """Replace `TensorOfShape` with the result of `tensor_transformer`"""
-    if o is None or isinstance(o, (float, int)):
+    if o is None or isinstance(o, (float, int, str)):
         return o
     if isinstance(o, TensorOfShape):
         return tensor_transformer(o)
@@ -95,36 +94,6 @@ def _recursively_transform_tensor_args(
     if isinstance(o, tuple):
         return tuple(_recursively_transform_tensor_args(x, tensor_transformer) for x in o)
     raise Exception(f"Unhandled type {type(o)}")
-
-def _convert_to_dtype_function_args(arguments: Iterable[Any]) -> List[Any]:
-    """Converts an Invocation argument to a dtype function argument.
-
-    TensorOfShape is replaced with two ints representing the rank
-    and dtype of the tensor, respectively.
-    """
-    def contains_tensor(o: Any) -> bool:
-        if o is None or isinstance(o, (float, int)):
-            return False
-        if isinstance(o, TensorOfShape):
-            return True
-        if isinstance(o, (list, tuple)):
-            for elem in o:
-                if contains_tensor(elem):
-                    return True
-            return False
-        raise Exception(f"Unhandled type {type(o)}")
-
-    result = []
-    for arg in arguments:
-        if contains_tensor(arg):
-            rank_arg = _recursively_transform_tensor_args(
-                arg, lambda x: len(x.shape))
-            dtype_arg = _recursively_transform_tensor_args(
-                arg, lambda x: x.dtype)
-            result += [rank_arg, dtype_arg]
-        else:
-            result.append(arg)
-    return result
 
 class Invocation:
     """Representation of a single op invocation (i.e. list of args to the op).
@@ -135,8 +104,8 @@ class Invocation:
 
     Specifically, this class has special knowledge of `TensorOfShape` and
     translates it appropriately to either a tensor (for the real op), a
-    `List[int]` for the shape function, and two `int`s representing
-    the tensor rank and dtype in the case of a dtype function.
+    `List[int]` for the shape function, and a tuple with two `int`s
+    representing the tensor rank and dtype in the case of a dtype function.
 
     This class also tracks whether the invocation is expected to raise an
     exception for greater precision when interpreting errors raised during
@@ -170,11 +139,13 @@ class Invocation:
 
     def to_dtype_function_args(self):
         """Gets positional arguments appropriate for a dtype function."""
-        return _convert_to_dtype_function_args(self.args)
+        tensor_transformer = lambda o: (len(o.shape), o.dtype)
+        return _recursively_transform_tensor_args(
+            self.args, tensor_transformer)
 
     def to_real_op_args(self):
         """Gets positional arguments appropriate for the real op."""
-        tensor_transformer = lambda o: torch.ones(o.shape, dtype=o.dtype)
+        tensor_transformer = lambda o: torch.ones(o.shape, dtype=o.dtype).to(o.device)
         return _recursively_transform_tensor_args(self.args, tensor_transformer)
 
     def __repr__(self) -> str:
@@ -286,6 +257,15 @@ def check_shape_function(invocations: List[Invocation]):
         return f
     return decorator
 
+@torch.jit.script
+def _convert_dtype_to_int(dtype: torch.dtype) -> int:
+    """Convert a PyTorch `dtype` into its underlying `int` representation.
+
+    This works because in TorchScript there is no special type for `dtypes`;
+    they are simply `int`s.
+    """
+    return dtype
+
 def check_dtype_function(invocations: List[Invocation]):
     """Decorator that automatically tests a dtype function.
 
@@ -309,7 +289,12 @@ def check_dtype_function(invocations: List[Invocation]):
                     golden_dtype = torch.tensor([]).to(type(golden_result)).dtype
                 else:
                     raise ValueError(f"Unhandled return type {type(golden_result)}")
-                if result_dtype != golden_dtype:
+                # Some dtype funtions have default `dtype` parameters, which are
+                # represented as `int` values in the registry. In order to
+                # support returning the default `int` value, the comparisons of
+                # the result and golden dtypes are done using their underlying
+                # `int` representation.
+                if _convert_dtype_to_int(result_dtype) != _convert_dtype_to_int(golden_dtype):
                     _report(f, invocation, f"Expected result dtype {golden_dtype}, got {result_dtype}")
         return f
     return decorator

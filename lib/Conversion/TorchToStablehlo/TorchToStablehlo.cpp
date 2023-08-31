@@ -44,6 +44,7 @@ public:
     registry.insert<chlo::ChloDialect>();
     registry.insert<stablehlo::StablehloDialect>();
     registry.insert<tensor::TensorDialect>();
+    registry.insert<shape::ShapeDialect>();
     registry.insert<arith::ArithDialect>();
     TorchConversion::getBackendTypeConversionDependentDialects(registry);
   }
@@ -51,7 +52,8 @@ public:
     MLIRContext *context = &getContext();
     ConversionTarget target(*context);
     target.addLegalDialect<chlo::ChloDialect, stablehlo::StablehloDialect,
-                           tensor::TensorDialect, arith::ArithDialect>();
+                           tensor::TensorDialect, arith::ArithDialect,
+                           shape::ShapeDialect>();
 
     TypeConverter typeConverter;
     typeConverter.addConversion([](Type type) { return type; });
@@ -65,7 +67,7 @@ public:
         typeConverter, patterns, target, options);
     torch_to_stablehlo::populateViewLikeOpPatternsAndLegality(
         typeConverter, patterns, target, options);
-    torch_to_stablehlo::populateGatherOpPatternsAndLegality(
+    torch_to_stablehlo::populateGatherScatterOpPatternsAndLegality(
         typeConverter, patterns, target, options);
     torch_to_stablehlo::populateReductionOpPatternsAndLegality(
         typeConverter, patterns, target, options);

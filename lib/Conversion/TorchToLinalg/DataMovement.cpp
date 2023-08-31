@@ -17,6 +17,7 @@
 #include "PopulatePatterns.h"
 #include "Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -32,31 +33,6 @@
 using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
-
-static Value toPositiveValidDim(ConversionPatternRewriter &rewriter,
-                                Location loc, Value torchOptionalInt,
-                                Value builtinInt, Value defaultValue,
-                                Value dimSize) {
-  if (torchOptionalInt.getType().isa<Torch::NoneType>())
-    return defaultValue;
-  auto dimSizeAsInt = castIndexToInt64(rewriter, loc, dimSize);
-  Value positiveDim =
-      toPositiveDimDynamic(rewriter, loc, builtinInt, dimSizeAsInt);
-  // positveDim < 0 ? 0 : positiveDim
-  Value cst0 = rewriter.create<arith::ConstantOp>(
-      loc, rewriter.getZeroAttr(dimSizeAsInt.getType()));
-  Value predDimSltZero = rewriter.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::slt, positiveDim, cst0);
-  Value atLeastZero =
-      rewriter.create<arith::SelectOp>(loc, predDimSltZero, cst0, positiveDim);
-  // atLeastZero > dimSizeAsInt ? dimSizeAsInt : atLeastZero
-  Value sgtDimSize = rewriter.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::sgt, atLeastZero, dimSizeAsInt);
-  Value boundedByDimSize = rewriter.create<arith::SelectOp>(
-      loc, sgtDimSize, dimSizeAsInt, atLeastZero);
-
-  return castIntToIndex(rewriter, loc, boundedByDimSize);
-}
 
 template <typename OpTy, typename OpAdaptor>
 LogicalResult prepareArgumentsForSlicingOp(OpTy op, OpAdaptor adaptor,
@@ -145,6 +121,13 @@ public:
       return rewriter.notifyMatchFailure(op, "end_dim must be constant");
     auto type = adaptor.getSelf().getType().cast<RankedTensorType>();
     auto inputRank = type.getRank();
+    if (inputRank == 1) {
+      // If input rank is equal to 1, then there's no scope for flattening the
+      // input tensor.
+      rewriter.replaceOp(op, adaptor.getSelf());
+      return success();
+    }
+
     auto resultType =
         getTypeConverter()->convertType(op.getType()).cast<RankedTensorType>();
     if (startDim < 0)
@@ -345,7 +328,7 @@ public:
     SmallVector<int64_t> inputShape =
         makeShapeTorchCompatible(inputType.getShape());
     int64_t inputRank = inputType.getRank();
-    TypeConverter *typeConverter = getTypeConverter();
+    const TypeConverter *typeConverter = getTypeConverter();
     auto resultType =
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
     int64_t resultRank = resultType.getRank();
@@ -712,7 +695,7 @@ public:
     Value input = adaptor.getSelf();
     auto inputType = input.getType().cast<RankedTensorType>();
     int64_t inputRank = inputType.getRank();
-    TypeConverter *typeConverter = getTypeConverter();
+    const TypeConverter *typeConverter = getTypeConverter();
     auto resultType =
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
     int64_t resultRank = resultType.getRank();
@@ -821,7 +804,7 @@ public:
           op, "unimplemented: dim(th) dimension is not expected to be dynamic");
     }
 
-    TypeConverter *typeConverter = getTypeConverter();
+    const TypeConverter *typeConverter = getTypeConverter();
     auto resultType =
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
     int64_t resultRank = resultType.getRank();
@@ -874,10 +857,9 @@ public:
       return rewriter.notifyMatchFailure(op, "dim must be constant");
     auto inputRank =
         adaptor.getSelf().getType().cast<RankedTensorType>().getRank();
-    if (dim < 0)
-      dim += inputRank + 1;
-    if (!(0 <= dim && dim <= inputRank))
-      return rewriter.notifyMatchFailure(op, "statically invalid");
+    dim = toPositiveDim(dim, inputRank + 1);
+    if (!isValidDim(dim, inputRank + 1))
+      return rewriter.notifyMatchFailure(op, "dim is statically invalid");
 
     SmallVector<ReassociationIndices> reassociationMap(inputRank);
     // From the perspective of the reassociation map, the situation of
@@ -1064,7 +1046,7 @@ public:
       return failure();
 
     Location loc = op.getLoc();
-    TypeConverter *typeConverter = getTypeConverter();
+    const TypeConverter *typeConverter = getTypeConverter();
 
     auto input = adaptor.getSelf();
     RankedTensorType resultType =
@@ -1099,12 +1081,7 @@ public:
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
     Location loc = op.getLoc();
-    TypeConverter *typeConverter = getTypeConverter();
-
-    Value dimValue = op.getDim();
-    int64_t dim;
-    if (!matchPattern(dimValue, m_TorchConstantInt(&dim)))
-      return op.emitError("unimplemented: dim is not constant");
+    const TypeConverter *typeConverter = getTypeConverter();
 
     // Collect all the tensors to be concatenated.
     auto tensorList = op.getTensors();
@@ -1117,7 +1094,27 @@ public:
 
     RankedTensorType newResultType =
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
+
+    auto outElemType = newResultType.getElementType();
+    auto dtypePromoteBody = [&](OpBuilder &builder, Location loc,
+                        ValueRange payloadArgs) {
+      Value elem = convertScalarToDtype(builder, loc, payloadArgs[0], outElemType);
+      builder.create<linalg::YieldOp>(loc, elem);
+    };
+    for (size_t i = 0; i < tensors.size(); ++i) {
+      tensors[i] = torch_to_linalg::createElementwiseLinalgGeneric(
+          rewriter, loc, {tensors[i]}, outElemType, dtypePromoteBody);
+    }
+
     int rank = newResultType.getRank();
+    Value dimValue = op.getDim();
+    int64_t dim;
+    if (!matchPattern(dimValue, m_TorchConstantInt(&dim)))
+      return op.emitError("unimplemented: dim is not constant");
+    dim = toPositiveDim(dim, rank);
+    if (!isValidDim(dim, rank))
+      return rewriter.notifyMatchFailure(op, "dim is statically invalid");
+      
     SmallVector<Value> offsets, sizes, strides;
     sizes.reserve(rank);
     strides.resize(rank, rewriter.create<arith::ConstantIndexOp>(loc, 1));
@@ -1125,10 +1122,6 @@ public:
 
     for (int i = 0; i < rank; ++i)
       sizes.push_back(rewriter.createOrFold<tensor::DimOp>(loc, tensors[0], i));
-
-    dim = toPositiveDim(dim, rank);
-    if (!isValidDim(dim, rank))
-      return rewriter.notifyMatchFailure(op, "dim is statically invalid");
 
     // Calculate the size of the `dim` result dimension by adding the dim size
     // of each tensor together.
@@ -1186,12 +1179,29 @@ public:
       return rewriter.notifyMatchFailure(
           op, "unimplemented: the size list is not from list construct");
     }
+    // For dynamic input dimension we need to use the `broadcastToShape`
+    // which in this case is `inShapeConverted` because this shape will yield
+    // us the dimension size of the output.
+    SmallVector<bool> useBroadcastToShape;
+    for (auto x : inShape) {
+      int64_t dim;
+      if (!matchPattern(x, m_TorchConstantInt(&dim))) {
+        Operation* defOp = x.getDefiningOp();
+        if (isa<AtenSizeOp, AtenSizeIntOp>(defOp))
+          useBroadcastToShape.push_back(true);
+        else
+          useBroadcastToShape.push_back(false);
+      } else {
+        useBroadcastToShape.push_back(false);
+      }
+    }
+
     SmallVector<Value> inShapeConverted = getTypeConvertedValues(
         rewriter, op.getLoc(), getTypeConverter(), inShape);
-
     Value result;
-    if (failed(torch_to_linalg::broadcastToGivenShape(
-            op, rewriter, self, inShapeConverted, result))) {
+    if (failed(torch_to_linalg::broadcastToGivenShape(op, rewriter, self,
+                                                      inShapeConverted, result,
+                                                      useBroadcastToShape))) {
       return rewriter.notifyMatchFailure(
           op, "unable to perform broadcast operation");
     }
@@ -1302,7 +1312,7 @@ public:
       return failure();
 
     Location loc = op.getLoc();
-    TypeConverter *typeConverter = getTypeConverter();
+    const TypeConverter *typeConverter = getTypeConverter();
 
     auto input = adaptor.getSelf();
 
@@ -1338,6 +1348,85 @@ public:
 };
 } // namespace
 
+namespace {
+class ConvertAtenViewAsComplexOp
+    : public OpConversionPattern<AtenViewAsComplexOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenViewAsComplexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
+      return failure();
+
+    Location loc = op.getLoc();
+    const TypeConverter *typeConverter = getTypeConverter();
+    MLIRContext *context = rewriter.getContext();
+
+    auto input = adaptor.getSelf();
+
+    RankedTensorType resultType =
+        typeConverter->convertType(op.getType()).cast<RankedTensorType>();
+
+    auto elementType = resultType.getElementType();
+    SmallVector<Value> resultShape;
+    for (int64_t i = 0; i < resultType.getRank(); i++) {
+      auto currentDimSize = rewriter.create<tensor::DimOp>(loc, input, i);
+      resultShape.push_back(currentDimSize);
+    }
+
+    Value outTensor = rewriter.create<tensor::EmptyOp>(
+        loc, getAsOpFoldResult(resultShape), elementType);
+
+    SmallVector<AffineExpr> outputExpr;
+    for (unsigned i = 0; i < resultType.getRank(); i++) {
+      outputExpr.push_back(getAffineDimExpr(i, context));
+    }
+
+    Value constantZero =
+        getConstant(rewriter, loc, 0, mlir::IndexType::get(context));
+    Value constantOne =
+        getConstant(rewriter, loc, 1, mlir::IndexType::get(context));
+
+    AffineMap outputMap =
+        AffineMap::get(resultType.getRank(), 0, outputExpr, op->getContext());
+
+    SmallVector<AffineMap> indexingMaps{outputMap};
+    SmallVector<utils::IteratorType> iteratorTypes(
+        resultType.getRank(), utils::IteratorType::parallel);
+    auto complexVar =
+        rewriter
+            .create<linalg::GenericOp>(
+                loc, outTensor.getType(), ValueRange{}, outTensor, indexingMaps,
+                iteratorTypes,
+                [&](OpBuilder &b, Location loc, ValueRange args) {
+                  SmallVector<Value> indicesZero;
+                  SmallVector<Value> indicesOne;
+
+                  for (int i = 0; i < resultType.getRank(); i++) {
+                    indicesZero.push_back(b.create<linalg::IndexOp>(loc, i));
+                    indicesOne.push_back(b.create<linalg::IndexOp>(loc, i));
+                  }
+
+                  indicesZero.push_back(constantZero);
+                  indicesOne.push_back(constantOne);
+
+                  Value realVal =
+                      b.create<tensor::ExtractOp>(loc, input, indicesZero);
+                  Value imagVal =
+                      b.create<tensor::ExtractOp>(loc, input, indicesOne);
+                  Value complexVal = b.create<complex::CreateOp>(
+                      loc, elementType, realVal, imagVal);
+                  b.create<linalg::YieldOp>(loc, complexVal);
+                })
+            .getResult(0);
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, complexVar);
+    return success();
+  }
+};
+} // namespace
+
 void mlir::torch::torch_to_linalg::populateDataMovementPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
     ConversionTarget &target) {
@@ -1368,4 +1457,6 @@ void mlir::torch::torch_to_linalg::populateDataMovementPatternsAndLegality(
   patterns.add<ConvertAtenCopyOp>(typeConverter, context);
   target.addIllegalOp<AtenSliceScatterOp>();
   patterns.add<ConvertAtenSliceScatterOp>(typeConverter, context);
+  target.addIllegalOp<AtenViewAsComplexOp>();
+  patterns.add<ConvertAtenViewAsComplexOp>(typeConverter, context);
 }
