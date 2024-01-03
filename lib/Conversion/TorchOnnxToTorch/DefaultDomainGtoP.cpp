@@ -185,10 +185,9 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
 		  for (int i = 1; i < operands.size(); i++) {
 		    result = rewriter.create<Torch::AtenMaximumOp>(
 		               binder.getLoc(), resultType, result, operands[i]);
-		  }
-		  rewriter.replaceOp(
-                    binder.op, result.getDefiningOp());
-		  return success();
+                  }
+                  rewriter.replaceOp(binder.op, result.getDefiningOp());
+                  return success();
                 });
   patterns.onOp("Min", 1,
                 [](OpBinder binder, ConversionPatternRewriter &rewriter) {
@@ -244,6 +243,131 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
                       binder.op, resultType, lhs, rhs);
                   return success();
                 });
+  patterns.onOp(
+      "Gather", 13, [](OpBinder binder, ConversionPatternRewriter &rewriter) {
+        Torch::ValueTensorType resultType;
+        Value data, indices;
+        int64_t axis;
+        if (binder.tensorOperandAtIndex(data, 0) ||
+            binder.tensorOperandAtIndex(indices, 1) ||
+            binder.tensorResultType(resultType) ||
+            binder.s64IntegerAttr(axis, "axis", 0))
+          return failure();
+        Location loc = binder.getLoc();
+        // Get data shape and rank.
+        auto dataTensorType = data.getType().cast<Torch::ValueTensorType>();
+        if (!dataTensorType || !dataTensorType.hasSizes()) {
+          return rewriter.notifyMatchFailure(binder.op,
+                                             "Expect non empty input data");
+        }
+        ArrayRef<int64_t> dataShape = dataTensorType.getSizes();
+        unsigned dataRank = dataShape.size();
+
+        // Compute total elements in the indices tensor.
+        auto indexType = indices.getType().cast<Torch::ValueTensorType>();
+        if (!indexType || !indexType.hasSizes()) {
+          return rewriter.notifyMatchFailure(binder.op,
+                                             "Expect non empty index tensor");
+        }
+        ArrayRef<int64_t> indexShape = indexType.getSizes();
+        unsigned indexRank = indexShape.size();
+        int64_t indexElemCount = 1;
+        for (int64_t dim : indexShape) {
+          if (dim == -1) {
+            indexElemCount = Torch::kUnknownSize;
+            break;
+          }
+          indexElemCount *= dim;
+        }
+
+        // We collapse indices into a (`indexElemCount`,) unary tensor,
+        // materialize all the non-axis dimension wrt data shape.
+        SmallVector<int64_t> collapsedIndexShape(dataRank, 1);
+        collapsedIndexShape[axis] = Torch::kUnknownSize;
+        if (indexElemCount != -1)
+          collapsedIndexShape[axis] = indexElemCount;
+
+        Value constOne = rewriter.create<Torch::ConstantIntOp>(
+            loc, rewriter.getI64IntegerAttr(1));
+        SmallVector<Value> indexShapeTensor;
+        Value prod = constOne;
+        for (unsigned i = 0; i < indexRank; ++i) {
+          Value indexDimVal = rewriter.create<Torch::AtenSizeIntOp>(
+              loc, indices,
+              rewriter.create<Torch::ConstantIntOp>(
+                  loc, rewriter.getI64IntegerAttr(i)));
+          indexShapeTensor.emplace_back(indexDimVal);
+          prod = rewriter.create<Torch::AtenMulIntOp>(loc, prod, indexDimVal);
+        }
+
+        SmallVector<Value> collapsedIndexSize(dataRank, constOne);
+        collapsedIndexSize[axis] = prod;
+        auto collapsedIndexSizeList =
+            rewriter.create<Torch::PrimListConstructOp>(
+                loc,
+                Torch::ListType::get(Torch::IntType::get(indices.getContext())),
+                collapsedIndexSize);
+
+        Type collapsedIndexType = Torch::ValueTensorType::get(
+            indexType.getContext(), llvm::ArrayRef(collapsedIndexShape),
+            indexType.getOptionalDtype());
+        auto collapsedIndices = rewriter.create<Torch::AtenViewOp>(
+            loc, collapsedIndexType, indices, collapsedIndexSizeList);
+
+        Type gatherResultType = Torch::ValueTensorType::get(
+            dataTensorType.getContext(), llvm::ArrayRef(collapsedIndexShape),
+            dataTensorType.getOptionalDtype());
+        Value constAxis = rewriter.create<Torch::ConstantIntOp>(
+            binder.getLoc(), rewriter.getType<Torch::IntType>(),
+            rewriter.getIntegerAttr(rewriter.getIntegerType(64), axis));
+        Value constFalse = rewriter.create<Torch::ConstantBoolOp>(
+            binder.getLoc(), rewriter.getType<Torch::BoolType>(),
+            rewriter.getBoolAttr(false));
+        auto gatherOp = rewriter.create<Torch::AtenGatherOp>(
+            loc, gatherResultType, data, constAxis, collapsedIndices,
+            /*sparseGrad=*/constFalse);
+
+        SmallVector<int64_t> dataShapeVector(dataShape);
+        dataShapeVector[axis] = Torch::kUnknownSize;
+        if (indexElemCount != -1)
+          dataShapeVector[axis] = indexElemCount;
+        Type expandResultType = Torch::ValueTensorType::get(
+            dataTensorType.getContext(), llvm::ArrayRef(dataShapeVector),
+            dataTensorType.getOptionalDtype());
+        SmallVector<Value> dataShapeTensor;
+        for (unsigned i = 0; i < dataRank; ++i) {
+          dataShapeTensor.emplace_back(rewriter.create<Torch::AtenSizeIntOp>(
+              loc, data,
+              rewriter.create<Torch::ConstantIntOp>(
+                  loc, rewriter.getI64IntegerAttr(i))));
+        }
+        dataShapeTensor[axis] = prod;
+        auto expandSizeList = rewriter.create<Torch::PrimListConstructOp>(
+            loc, Torch::ListType::get(Torch::IntType::get(data.getContext())),
+            dataShapeTensor);
+        auto expandedGather = rewriter.create<Torch::AtenExpandOp>(
+            loc, expandResultType, gatherOp, expandSizeList,
+            /*implicit=*/constFalse);
+
+        // Create result size list for the aten.view op.
+        SmallVector<Value> resultShapeTensor;
+        for (unsigned i = 0; i < dataRank; ++i) {
+          if (i == axis) {
+            resultShapeTensor.insert(resultShapeTensor.end(),
+                                     indexShapeTensor.begin(),
+                                     indexShapeTensor.end());
+            continue;
+          }
+          resultShapeTensor.emplace_back(dataShapeTensor[i]);
+        }
+        auto resultSizeList = rewriter.create<Torch::PrimListConstructOp>(
+            loc, Torch::ListType::get(Torch::IntType::get(data.getContext())),
+            resultShapeTensor);
+
+        rewriter.replaceOpWithNewOp<Torch::AtenViewOp>(
+            binder.op, resultType, expandedGather, resultSizeList);
+        return success();
+      });
   patterns.onOp(
       "GatherElements", 13,
       [](OpBinder binder, ConversionPatternRewriter &rewriter) {
