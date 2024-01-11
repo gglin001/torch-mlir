@@ -14,7 +14,7 @@ configure_lit_site_cfg(
 set(TORCH_MLIR_TEST_DEPENDS
         FileCheck count not
         TorchMLIRPythonModules
-        torch-mlir-opt 
+        torch-mlir-opt
         torch-mlir-capi-torch-test
         )
 
@@ -26,4 +26,4 @@ set_target_properties(check-torch-mlir PROPERTIES FOLDER "Tests")
 
 add_lit_testsuites(TORCH_MLIR ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TORCH_MLIR_TEST_DEPENDS})
 
-# add_subdirectory(CAPI)
+add_subdirectory(CAPI)
