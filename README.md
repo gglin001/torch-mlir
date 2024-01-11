@@ -38,8 +38,17 @@ We have few paths to lower down to the Torch MLIR Dialect.
 - `#torch-mlir` channel on the LLVM [Discord](https://discord.gg/xS7Z362) - this is the most active communication channel
 - Github issues [here](https://github.com/llvm/torch-mlir/issues)
 - [`torch-mlir` section](https://llvm.discourse.group/c/projects-that-want-to-become-official-llvm-projects/torch-mlir/41) of LLVM Discourse
-- Weekly meetings on Mondays 9AM PST. See [here](https://discourse.llvm.org/t/community-meeting-developer-hour-refactoring-recurring-meetings/62575) for more information.
-- Weekly op office hours on Thursdays 8:30-9:30AM PST. See [here](https://discourse.llvm.org/t/announcing-torch-mlir-office-hours/63973/2) for more information.
+
+### Meetings
+
+Community Meeting / Developer Hour:
+- 1st and 3rd Monday of the month at 9 am PST
+- 2nd and 4th Monday of the month at 5 pm PST
+
+Office Hours:
+- Every Thursday at 8:30 am PST
+
+Meeting links can be found [here](https://discourse.llvm.org/t/new-community-meeting-developer-hour-schedule/73868).
 
 ## Install torch-mlir snapshot
 
@@ -61,7 +70,7 @@ python -m pip install --upgrade pip
 Then, we can install torch-mlir with the corresponding torch and torchvision nightlies.
 ```
 pip install --pre torch-mlir torchvision \
-  -f https://llvm.github.io/torch-mlir/package-index/
+  -f https://llvm.github.io/torch-mlir/package-index/ \
   --extra-index-url https://download.pytorch.org/whl/nightly/cpu
 ```
 
@@ -73,10 +82,10 @@ Standalone script to Convert a PyTorch ResNet18 model to MLIR and run it on the 
 
 ```shell
 # Get the latest example if you haven't checked out the code
-wget https://raw.githubusercontent.com/llvm/torch-mlir/main/examples/torchscript_resnet18.py
+wget https://raw.githubusercontent.com/llvm/torch-mlir/main/projects/pt1/examples/torchscript_resnet18.py
 
 # Run ResNet18 as a standalone script.
-python examples/torchscript_resnet18.py
+python projects/pt1/examples/torchscript_resnet18.py
 
 load image from https://upload.wikimedia.org/wikipedia/commons/2/26/YellowLabradorLooking_new.jpg
 Downloading: "https://download.pytorch.org/models/resnet18-f37072fd.pth" to /home/mlir/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth

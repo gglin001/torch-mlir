@@ -11,13 +11,13 @@
 
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
-#include "Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Matchers.h"
+#include "torch-mlir/Conversion/TorchToLinalg/Utils.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
@@ -644,14 +644,16 @@ public:
             return rewriter.notifyMatchFailure(
                 op,
                 "unimplemented: index tensors with overlapping dynamic dims");
-          if (staticDimSize > 1) {
-            Value cstStaticDimSize = getConstant(rewriter, loc, staticDimSize,
-                                                 rewriter.getIndexType());
-            auto equalToRunning = rewriter.create<arith::CmpIOp>(
-                loc, arith::CmpIPredicate::eq, cstStaticDimSize,
-                dynamicDims[0]);
-            rewriter.create<cf::AssertOp>(loc, equalToRunning,
-                                          "mismatched size for broadcast");
+          if (!isAssumingStrictSymbolicShapes(rewriter)) {
+            if (staticDimSize > 1) {
+              Value cstStaticDimSize = getConstant(rewriter, loc, staticDimSize,
+                                                   rewriter.getIndexType());
+              auto equalToRunning = rewriter.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::eq, cstStaticDimSize,
+                  dynamicDims[0]);
+              rewriter.create<cf::AssertOp>(loc, equalToRunning,
+                                            "mismatched size for broadcast");
+            }
           }
           broadcastedIndexShape.push_back(dynamicDims[0]);
         } else {

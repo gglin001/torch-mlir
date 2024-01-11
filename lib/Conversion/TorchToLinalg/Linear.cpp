@@ -11,12 +11,12 @@
 
 #include "../PassDetail.h"
 #include "PopulatePatterns.h"
-#include "Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Matchers.h"
+#include "torch-mlir/Conversion/TorchToLinalg/Utils.h"
 #include "torch-mlir/Conversion/Utils/Utils.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchDialect.h"
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
@@ -51,35 +51,56 @@ public:
     // The compiler cannot crash even if the user wrote an erroneous program!
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
-    if (lhs.getType().cast<RankedTensorType>().getRank() != 2 ||
-        rhs.getType().cast<RankedTensorType>().getRank() != 2) {
+
+    RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
+    RankedTensorType rhsType = rhs.getType().cast<RankedTensorType>();
+
+    if (lhsType.getRank() != 2 || rhsType.getRank() != 2) {
       return rewriter.notifyMatchFailure(
           op, "expected both operands to aten.mm to be rank 2");
     }
 
+    ValueTensorType lhsTorchType =
+        op.getSelf().getType().cast<ValueTensorType>();
+    ValueTensorType rhsTorchType =
+        op.getMat2().getType().cast<ValueTensorType>();
+    if (lhsTorchType.getDtype() != rhsTorchType.getDtype()) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported: aten.mm with different input element types");
+    }
+
     Value lhsDim0 = rewriter.create<tensor::DimOp>(loc, lhs, 0);
-    Value lhsDim1 = rewriter.create<tensor::DimOp>(loc, lhs, 1);
-    Value rhsDim0 = rewriter.create<tensor::DimOp>(loc, rhs, 0);
     Value rhsDim1 = rewriter.create<tensor::DimOp>(loc, rhs, 1);
-    Value contractingDimEqual = rewriter.create<arith::CmpIOp>(
-        loc, arith::CmpIPredicate::eq, lhsDim1, rhsDim0);
-    rewriter.create<cf::AssertOp>(
-        loc, contractingDimEqual,
-        rewriter.getStringAttr(
-            "mismatching contracting dimension for torch.aten.mm"));
+
+    if (!isAssumingStrictSymbolicShapes(rewriter)) {
+      Value lhsDim1 = rewriter.create<tensor::DimOp>(loc, lhs, 1);
+      Value rhsDim0 = rewriter.create<tensor::DimOp>(loc, rhs, 0);
+      Value contractingDimEqual = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::eq, lhsDim1, rhsDim0);
+      rewriter.create<cf::AssertOp>(
+          loc, contractingDimEqual,
+          rewriter.getStringAttr(
+              "mismatching contracting dimension for torch.aten.mm"));
+    }
 
     Type newResultType = getTypeConverter()->convertType(op.getType());
     Type elementType = newResultType.cast<TensorType>().getElementType();
-    Value initTensor = rewriter.create<tensor::EmptyOp>(
-        loc, ArrayRef<OpFoldResult>{lhsDim0, rhsDim1}, elementType);
-    Value c0 = rewriter.create<arith::ConstantOp>(
-        loc, FloatAttr::get(elementType, 0.0));
-    Value zeroFill =
-        rewriter.create<linalg::FillOp>(loc, c0, initTensor).getResult(0);
-    Value matmul = rewriter
-                       .create<linalg::MatmulOp>(loc, zeroFill.getType(),
-                                                 ValueRange{lhs, rhs}, zeroFill)
-                       .getResult(0);
+    Value zeroFill = createZeroInitTensor(
+        rewriter, loc, ValueRange{lhsDim0, rhsDim1}, elementType);
+
+    Value matmul;
+    auto intType = dyn_cast<mlir::IntegerType>(lhsTorchType.getDtype());
+    if (intType && intType.isUnsigned()) {
+      matmul = rewriter
+                   .create<linalg::MatmulUnsignedOp>(
+                       loc, zeroFill.getType(), ValueRange{lhs, rhs}, zeroFill)
+                   .getResult(0);
+    } else {
+      matmul = rewriter
+                   .create<linalg::MatmulOp>(loc, zeroFill.getType(),
+                                             ValueRange{lhs, rhs}, zeroFill)
+                   .getResult(0);
+    }
     // When constructed with just dynamic sizes, EmptyOp will have a result
     // type which has all `?`'s for dimensions, which might not be the result
     // type of `op`. The constraints on later linalg ops means that the result
@@ -170,8 +191,9 @@ public:
     Value lhs = adaptor.getSelf();
     Value rhs = adaptor.getOther();
 
-    if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
+    if (failed(verifyLinalgCompatibleTypes(op, rewriter))) {
       return failure();
+    }
     auto lhsType = lhs.getType().cast<RankedTensorType>();
     auto rhsType = rhs.getType().cast<RankedTensorType>();
 
@@ -239,7 +261,26 @@ public:
       return success();
     }
 
-    // Fourth Case: Batch-Matrix Multiplication.
+    // Fourth Case: Vec-Vec Multiplication.
+    if (lhsRank == 2 && rhsRank == 2) {
+      Value lhsDim0 = getDimOp(rewriter, loc, lhs, 0);
+      Value lhsDim1 = getDimOp(rewriter, loc, lhs, 1);
+      Value rhsDim0 = getDimOp(rewriter, loc, rhs, 0);
+      Value rhsDim1 = getDimOp(rewriter, loc, rhs, 1);
+      checkDimEqualHelper(rewriter, loc, lhsDim1, rhsDim0);
+
+      Value zeroTensor = createZeroInitTensor(
+          rewriter, loc, ValueRange{lhsDim0, rhsDim1}, elementType);
+      Value matmul =
+          rewriter
+              .create<linalg::MatmulOp>(loc, zeroTensor.getType(),
+                                        ValueRange{lhs, rhs}, zeroTensor)
+              .getResult(0);
+      rewriter.replaceOpWithNewOp<tensor::CastOp>(op, newResultType, matmul);
+      return success();
+    }
+
+    // Fifth Case: Batch-Matrix Multiplication.
     // TODO: Handle batch matrix multiplication when one of the matrix is unity
     // rank and the other has batch dimension.
     if (lhsRank > 1 && rhsRank > 1) {
@@ -292,13 +333,24 @@ public:
 
       // Broadcast the batch dimensions of both the matrices.
       Value broadcastedLhs, broadcastedRhs;
+      // TODO: Improve usage of static shape information.
+      SmallVector<int64_t> lhsTargetShape(lhsBroadcastToShape.size(),
+                                          ShapedType::kDynamic);
+      auto lhsBroadcastType =
+          RankedTensorType::get(lhsTargetShape, lhsType.getElementType());
       if (failed(torch_to_linalg::broadcastToGivenShape(
-              op, rewriter, lhs, lhsBroadcastToShape, broadcastedLhs))) {
+              op, rewriter, lhs, lhsBroadcastToShape, lhsBroadcastType,
+              broadcastedLhs))) {
         return rewriter.notifyMatchFailure(
             op, "unable to perform broadcast operation");
       }
+      SmallVector<int64_t> rhsTargetShape(rhsBroadcastToShape.size(),
+                                          ShapedType::kDynamic);
+      auto rhsBroadcastType =
+          RankedTensorType::get(rhsTargetShape, rhsType.getElementType());
       if (failed(torch_to_linalg::broadcastToGivenShape(
-              op, rewriter, rhs, rhsBroadcastToShape, broadcastedRhs))) {
+              op, rewriter, rhs, rhsBroadcastToShape, rhsBroadcastType,
+              broadcastedRhs))) {
         return rewriter.notifyMatchFailure(
             op, "unable to perform broadcast operation");
       }
@@ -441,16 +493,28 @@ public:
     Value rhs = adaptor.getMat2();
     RankedTensorType lhsType = lhs.getType().cast<RankedTensorType>();
     RankedTensorType rhsType = rhs.getType().cast<RankedTensorType>();
+    Type newResultType = getTypeConverter()->convertType(op.getType());
+    Type resultElementType = newResultType.cast<RankedTensorType>().getElementType();
+    Type lhsElementType = lhsType.cast<RankedTensorType>().getElementType();
+    Type rhsElementType = rhsType.cast<RankedTensorType>().getElementType();
 
     if (lhsType.getRank() != 3 || rhsType.getRank() != 3) {
       return rewriter.notifyMatchFailure(
           op, "expected both operands to aten.bmm to be rank 3");
     }
-    if (!lhsType.getElementType().isa<mlir::FloatType>() ||
-        lhsType.getElementType() != rhsType.getElementType())
-      return op.emitError(
-          "unimplemented: non floating point operands or operands of "
-          "different types");
+
+    // Convert the inputs element type equivalent to the result' element type.
+    if (lhsElementType != rhsElementType) {
+      if (lhsElementType != resultElementType) {
+        // True if the lhs element type is not equal to the result' element type.
+        lhs = torch_to_linalg::convertTensorToElementType(
+            rewriter, loc, lhs, resultElementType);
+      } else {
+        // True if the rhs element type is not equal to the result' element type.
+        rhs = torch_to_linalg::convertTensorToElementType(
+            rewriter, loc, rhs, resultElementType);
+      }
+    }
 
     Value lhsDim0 = getDimOp(rewriter, loc, lhs, 0);
     Value lhsDim1 = getDimOp(rewriter, loc, lhs, 1);
@@ -465,10 +529,8 @@ public:
     // Check the matrixs shapes are valid for mulplication.
     checkDimEqualHelper(rewriter, loc, lhsDim2, rhsDim1);
 
-    Type newResultType = getTypeConverter()->convertType(op.getType());
-    Type elementType = newResultType.cast<TensorType>().getElementType();
     Value initTensor0 = createZeroInitTensor(
-        rewriter, loc, ValueRange{lhsDim0, lhsDim1, rhsDim2}, elementType);
+        rewriter, loc, ValueRange{lhsDim0, lhsDim1, rhsDim2}, resultElementType);
 
     Value bmm =
         rewriter
@@ -806,6 +868,7 @@ public:
                                                       indices);
       };
 
+      // expand F,C,H,W -> G,F/G,C,H,W
       auto expandWeight = [&](Value tensor) {
         auto inType = tensor.getType().cast<RankedTensorType>();
         auto inShape = makeShapeTorchCompatible(inType.getShape());
@@ -826,21 +889,19 @@ public:
 
       Value paddedInputExpanded = expandGroups(paddedInput, 1);
       Value weightExpanded = expandWeight(weight);
-      Value outputTensorExpanded = expandGroups(outputTensor, 1);
+      auto expandOutputTensor = expandGroups(outputTensor, 1);
 
       // TODO: add 1D and 3D case
       conv = rewriter
-                 .create<linalg::Conv2DNgchwFgchwOp>(
-                     loc, outputTensorExpanded.getType(),
+                 .create<linalg::Conv2DNgchwGfchwOp>(
+                     loc, expandOutputTensor.getResultType(),
                      ValueRange{paddedInputExpanded, weightExpanded},
-                     outputTensorExpanded, stridesAttr, dilationAttr)
+                     expandOutputTensor.getResult(), stridesAttr, dilationAttr)
                  .getResult(0);
 
-      SmallVector<ReassociationIndices> indices{{0}, {1, 2}};
-      for (auto dim = 3; dim <= (int64_t)inRank; dim++)
-        indices.push_back({dim});
       conv = rewriter.create<tensor::CollapseShapeOp>(
-          loc, outputTensor.getType(), conv, indices);
+          loc, outputTensor.getType(), conv,
+          expandOutputTensor.getReassociationIndices());
     }
 
     Type newResultType = getTypeConverter()->convertType(op.getType());

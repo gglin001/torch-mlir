@@ -178,6 +178,12 @@ function run_in_docker() {
         out-of-tree)
           setup_venv "$python_version" "$TM_TORCH_VERSION"
           build_out_of_tree "$TM_USE_PYTORCH_BINARY" "$python_version" "$TM_TORCH_VERSION"
+          if [ "${TM_UPDATE_ODS_AND_ABSTRACT_INTERP_LIB}" == "ON" ]; then
+            pushd /main_checkout/torch-mlir
+            TORCH_MLIR_BUILD_DIR=/main_checkout/torch-mlir/build_oot ./build_tools/update_torch_ods.sh
+            TORCH_MLIR_BUILD_DIR=/main_checkout/torch-mlir/build_oot ./build_tools/update_abstract_interp_lib.sh
+            popd
+          fi
           if [ "${TM_SKIP_TESTS}" == "OFF" ]; then
             test_out_of_tree
           fi
@@ -228,9 +234,8 @@ function build_in_tree() {
       -DCMAKE_C_COMPILER_LAUNCHER=ccache \
       -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
       -DLLVM_ENABLE_PROJECTS=mlir \
-      -DLLVM_EXTERNAL_PROJECTS="torch-mlir;torch-mlir-dialects" \
+      -DLLVM_EXTERNAL_PROJECTS="torch-mlir" \
       -DLLVM_EXTERNAL_TORCH_MLIR_SOURCE_DIR="/main_checkout/torch-mlir" \
-      -DLLVM_EXTERNAL_TORCH_MLIR_DIALECTS_SOURCE_DIR="/main_checkout/torch-mlir/externals/llvm-external-projects/torch-mlir-dialects" \
       -DLLVM_TARGETS_TO_BUILD=host \
       -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
       -DTORCH_MLIR_ENABLE_LTC=${enable_ltc} \
@@ -240,7 +245,7 @@ function build_in_tree() {
       -DTM_PYTORCH_INSTALL_WITHOUT_REBUILD=${TM_PYTORCH_INSTALL_WITHOUT_REBUILD} \
       -DPython3_EXECUTABLE="$(which python3)" \
       /main_checkout/torch-mlir/externals/llvm-project/llvm
-  cmake --build /main_checkout/torch-mlir/build
+  cmake --build /main_checkout/torch-mlir/build --target tools/torch-mlir/all
   ccache -s
 }
 
@@ -282,7 +287,7 @@ function test_in_tree() {
   cmake --build /main_checkout/torch-mlir/build --target check-torch-mlir-all
 
   cd /main_checkout/torch-mlir/
-  export PYTHONPATH="/main_checkout/torch-mlir/build/tools/torch-mlir/python_packages/torch_mlir"
+  export PYTHONPATH="/main_checkout/torch-mlir/build/tools/torch-mlir/python_packages/torch_mlir:/main_checkout/torch-mlir/projects/pt1"
 
   case $torch_version in
     nightly)
@@ -299,6 +304,11 @@ function test_in_tree() {
 
       echo ":::: Run Linalg e2e integration tests"
       python -m e2e_testing.main --config=linalg -v
+
+      # Dynamo is changing a lot in nightly versions, and thus the implementation
+      # tends to become incompatible to the stable version.
+      echo ":::: Run TorchDynamo e2e integration tests"
+      python -m e2e_testing.main --config=torchdynamo -v
       ;;
     stable)
       echo ":::: Test with stable torch"
@@ -315,12 +325,6 @@ function test_in_tree() {
 
   echo ":::: Run make_fx + TOSA e2e integration tests"
   python -m e2e_testing.main --config=make_fx_tosa -v
-
-  echo ":::: Run TorchDynamo e2e integration tests"
-  python -m e2e_testing.main --config=torchdynamo -v
-
-  echo ":::: Run StableHLO e2e integration tests"
-  python -m e2e_testing.main --config=stablehlo -v
 
   echo ":::: Run TOSA e2e integration tests"
   python -m e2e_testing.main --config=tosa -v
@@ -347,7 +351,6 @@ function setup_venv() {
       echo ":::: Using stable dependencies"
       python3 -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
       python3 -m pip install --no-cache-dir -r /main_checkout/torch-mlir/build-requirements.txt
-      python3 -m pip install --no-cache-dir -r /main_checkout/torch-mlir/test-requirements.txt
       ;;
     *)
       echo "Unrecognized torch version '$torch_version'"
@@ -355,14 +358,15 @@ function setup_venv() {
       ;;
   esac
 
+  python3 -m pip install --no-cache-dir -r /main_checkout/torch-mlir/test-requirements.txt
 }
 
 function build_out_of_tree() {
   local torch_from_bin="$1"
   local python_version="$2"
-  echo ":::: Build out-of-tree Torch from binary: $torch_from_bin with Python: $python_version"
-
   local torch_version="$3"
+  echo ":::: Build out-of-tree Torch from binary: $torch_from_bin with Python: $python_version ($torch_version)"
+
   local enable_ltc="ON"
   if [[ "${torch_version}" == "stable" ]]
   then

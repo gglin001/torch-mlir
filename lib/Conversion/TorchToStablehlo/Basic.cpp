@@ -13,6 +13,7 @@
 #include "PopulatePatterns.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/Shape/IR/Shape.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -25,7 +26,6 @@
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "torch-mlir/Dialect/TorchConversion/IR/TorchConversionOps.h"
-#include "utils/hlo_utils.h"
 #include <iostream>
 #include <numeric>
 
@@ -33,6 +33,34 @@ using namespace mlir;
 using namespace mlir::torch;
 using namespace mlir::torch::Torch;
 using namespace mlir::torch::torch_to_stablehlo;
+
+namespace {
+
+template <typename T>
+static Value getConstantLike(OpBuilder &b, Location loc, T constant,
+                             Value val) {
+  Type ty = getElementTypeOrSelf(val.getType());
+  auto getAttr = [&]() -> Attribute {
+    if (ty.isa<mlir::IntegerType>())
+      return b.getIntegerAttr(ty, constant);
+    if (ty.isa<mlir::FloatType>())
+      return b.getFloatAttr(ty, constant);
+    if (auto complexTy = ty.dyn_cast<mlir::ComplexType>())
+      return complex::NumberAttr::get(complexTy, constant, 0);
+    llvm_unreachable("unhandled element type");
+  };
+  return b.create<mlir::chlo::ConstantLikeOp>(loc, cast<TypedAttr>(getAttr()),
+                                              val);
+}
+
+Value getConstantLike(OpBuilder &b, Location loc, const APFloat &constant,
+                      Value val) {
+  Type ty = getElementTypeOrSelf(val.getType());
+  return b.create<mlir::chlo::ConstantLikeOp>(loc, b.getFloatAttr(ty, constant),
+                                              val);
+}
+
+} // namespace
 
 LogicalResult broadcastRanks(PatternRewriter &rewriter, Operation *op,
                              mlir::Value &self, mlir::Value &other,
@@ -587,12 +615,8 @@ public:
     SmallVector<int64_t> permValues(inputRank);
     std::iota(std::begin(permValues), std::end(permValues), 0);
     std::swap(permValues[dim0], permValues[dim1]);
-    DenseIntElementsAttr permutation = DenseIntElementsAttr::get(
-        RankedTensorType::get({static_cast<long int>(permValues.size())},
-                              rewriter.getI64Type()),
-        permValues);
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, outType, self,
-                                                        permutation);
+                                                        permValues);
     return success();
   }
 };
@@ -765,12 +789,8 @@ LogicalResult ConvertAtenOp<AtenPermuteOp>::matchAndRewrite(
       return op.emitError("not all dims are valid");
   }
 
-  DenseIntElementsAttr permutation = DenseIntElementsAttr::get(
-      RankedTensorType::get({static_cast<long int>(permValues.size())},
-                            rewriter.getI64Type()),
-      permValues);
   rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, outType, self,
-                                                      permutation);
+                                                      permValues);
   return success();
 }
 
@@ -836,7 +856,7 @@ LogicalResult ConvertAtenOp<AtenReciprocalOp>::matchAndRewrite(
                         "for AtenReciprocalOp");
   }
 
-  Value oneTensor = chlo::getConstantLike(rewriter, op->getLoc(), 1, input);
+  Value oneTensor = getConstantLike(rewriter, op->getLoc(), 1, input);
   rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, outTy, oneTensor, input);
   return success();
 }
@@ -893,6 +913,24 @@ LogicalResult ConvertAtenOp<PrimNumToTensorScalarOp>::matchAndRewrite(
   return success();
 }
 
+// AtenScalarImplicitOp
+template <>
+LogicalResult ConvertAtenOp<AtenScalarImplicitOp>::matchAndRewrite(
+    AtenScalarImplicitOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  Location loc = op.getLoc();
+  Type inputDtype =
+      op.getA().getType().template cast<BaseTensorType>().getDtype();
+  Type resultType =
+      this->getTypeConverter()->convertType(op->getResult(0).getType());
+  auto result =
+      rewriter.create<tensor::ExtractOp>(loc, adaptor.getA());
+
+  rewriter.replaceOp(
+      op, convertScalarToDtype(rewriter, loc, result, resultType, inputDtype));
+  return success();
+}
+
 // AtenContiguousOp
 // Ref: TosaToTosa.cpp for implementation details
 template <>
@@ -927,7 +965,7 @@ LogicalResult ConvertAtenOp<AtenReluOp>::matchAndRewrite(
   }
 
   Value zeroTensor;
-  zeroTensor = chlo::getConstantLike(
+  zeroTensor = getConstantLike(
       rewriter, op->getLoc(),
       APFloat::getZero(lhsElemTy.cast<mlir::FloatType>().getFloatSemantics(),
                        false),
@@ -949,9 +987,9 @@ LogicalResult ConvertAtenOp<AtenGeluOp>::matchAndRewrite(
     return op.emitError("only ranked tensor type is supported.");
   }
 
-  Value one = chlo::getConstantLike(rewriter, loc, 1.0, input);
-  Value two = chlo::getConstantLike(rewriter, loc, 2.0, input);
-  Value half = chlo::getConstantLike(rewriter, loc, 0.5, input);
+  Value one = getConstantLike(rewriter, loc, 1.0, input);
+  Value two = getConstantLike(rewriter, loc, 2.0, input);
+  Value half = getConstantLike(rewriter, loc, 0.5, input);
   auto rsqrtTwo = rewriter.create<mlir::stablehlo::RsqrtOp>(loc, two);
   auto erfElement = rewriter.create<stablehlo::MulOp>(loc, input, rsqrtTwo);
   auto erf = rewriter.create<mlir::chlo::ErfOp>(loc, erfElement);
@@ -1467,13 +1505,12 @@ LogicalResult ConvertAtenOp<AtenGeluBackwardOp>::matchAndRewrite(
     return rewriter.notifyMatchFailure(op, "Unsupported value of approximate");
   }
   // Create constant value
-  Value kAlpha =
-      chlo::getConstantLike(rewriter, loc, 0.70710678118654752440, input);
+  Value kAlpha = getConstantLike(rewriter, loc, 0.70710678118654752440, input);
   Value cstAlpha0 =
-      chlo::getConstantLike(rewriter, loc, 1.12837916709551257390, input);
-  Value half = chlo::getConstantLike(rewriter, loc, .5, input);
-  Value one = chlo::getConstantLike(rewriter, loc, 1.0, input);
-  Value negHalf = chlo::getConstantLike(rewriter, loc, -0.5, input);
+      getConstantLike(rewriter, loc, 1.12837916709551257390, input);
+  Value half = getConstantLike(rewriter, loc, .5, input);
+  Value one = getConstantLike(rewriter, loc, 1.0, input);
+  Value negHalf = getConstantLike(rewriter, loc, -0.5, input);
 
   // Compute
   Value kBeta0 =
@@ -1553,36 +1590,6 @@ LogicalResult ConvertAtenOp<AtenUniformOp>::matchAndRewrite(
   return success();
 }
 
-template <>
-LogicalResult ConvertAtenOp<AtenRandOp>::matchAndRewrite(
-    AtenRandOp op, OpAdaptor adaptor,
-    ConversionPatternRewriter &rewriter) const {
-  Location loc = op.getLoc();
-  SmallVector<int64_t> size;
-  if (!matchPattern(adaptor.getSize(), m_TorchListOfConstantInts(size))) {
-    return rewriter.notifyMatchFailure(op,
-                                       "only constant integer size supported");
-  }
-  auto shapeTensor = rewriter.create<stablehlo::ConstantOp>(
-      loc, rewriter.getI64TensorAttr(size));
-  auto outTy = getTypeConverter()->convertType(op.getType());
-  auto outElemTy = outTy.cast<RankedTensorType>().getElementType();
-
-  if (!outElemTy.isa<FloatType>()) {
-    return rewriter.notifyMatchFailure(op, "only float type supported");
-  }
-
-  Value from = rewriter.create<arith::ConstantOp>(
-      loc, rewriter.getFloatAttr(outElemTy, 0.0));
-  from = hlo::scalarToStablehloTensor(rewriter, op, from, outElemTy);
-  Value to = rewriter.create<arith::ConstantOp>(
-      loc, rewriter.getFloatAttr(outElemTy, 1.0));
-  to = hlo::scalarToStablehloTensor(rewriter, op, to, outElemTy);
-  rewriter.replaceOpWithNewOp<stablehlo::RngOp>(
-      op, outTy, from, to, shapeTensor, stablehlo::RngDistribution::UNIFORM);
-  return success();
-}
-
 // Converts `aten.empty.memory_format` to `tensor.empty` op.
 template <>
 LogicalResult ConvertAtenOp<AtenEmptyMemoryFormatOp>::matchAndRewrite(
@@ -1657,13 +1664,18 @@ LogicalResult ConvertAtenOp<AtenEmptyMemoryFormatOp>::matchAndRewrite(
       return rewriter.notifyMatchFailure(
           op, "unimplemented: dtype must be a constant integer or none");
     FailureOr<Type> maybeResultElementType = getTypeForScalarType(
-        op->getContext(), (torch_upstream::ScalarType)dtypeInt,
-        IntegerType::Signless);
+        op->getContext(), (torch_upstream::ScalarType)dtypeInt);
     if (failed(maybeResultElementType)) {
       return rewriter.notifyMatchFailure(
           op, "unable to convert `dtypeInt` to builtin type");
     }
     resultElementType = *maybeResultElementType;
+    // The stablehlo backend expects signed integers to be signless.
+    if (resultElementType.isSignedInteger()) {
+      resultElementType = IntegerType::get(
+          op->getContext(), resultElementType.getIntOrFloatBitWidth(),
+          IntegerType::Signless);
+    }
   }
 
   // Create an uninitialized tensor of `resultSize` shape.
@@ -1735,8 +1747,7 @@ LogicalResult ConvertAtenOp<AtenFlipOp>::matchAndRewrite(
     }
   }
 
-  rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
-      op, outType, self, rewriter.getI64TensorAttr(dims));
+  rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, outType, self, dims);
   return success();
 }
 
@@ -1855,6 +1866,7 @@ void mlir::torch::torch_to_stablehlo::populateBasicOpPatternsAndLegality(
   INSERT_ATENOP_PATTERN(AtenReciprocalOp);
   INSERT_ATENOP_PATTERN(AtenPowTensorScalarOp);
   INSERT_ATENOP_PATTERN(PrimNumToTensorScalarOp);
+  INSERT_ATENOP_PATTERN(AtenScalarImplicitOp);
   INSERT_ATENOP_PATTERN(AtenContiguousOp);
 
   INSERT_ATENOP_PATTERN(AtenReluOp);
@@ -1874,7 +1886,6 @@ void mlir::torch::torch_to_stablehlo::populateBasicOpPatternsAndLegality(
   INSERT_ATENOP_PATTERN(AtenWhereSelfOp);
   INSERT_ATENOP_PATTERN(AtenPowTensorTensorOp);
   INSERT_ATENOP_PATTERN(AtenUniformOp);
-  INSERT_ATENOP_PATTERN(AtenRandOp);
   INSERT_ATENOP_PATTERN(AtenEmptyMemoryFormatOp);
   INSERT_ATENOP_PATTERN(AtenFillScalarOp);
   INSERT_ATENOP_PATTERN(AtenFlipOp);

@@ -162,6 +162,42 @@ static Value getScalarIntValue(Value input, Location loc,
   return nullptr;
 }
 
+static Value getScalarFloatValue(Value input, Location loc,
+                                 PatternRewriter &rewriter) {
+  auto inputType = input.getType();
+  if (inputType.isa<Torch::FloatType>()) {
+    return input;
+  }
+
+  auto inputTensorType = inputType.dyn_cast<BaseTensorType>();
+  if (!inputTensorType)
+    return nullptr;
+
+  Type inputDtype = inputTensorType.getOptionalDtype();
+  if (!inputDtype ||
+      (!inputDtype.isF16() && !inputDtype.isF32() && !inputDtype.isF64()))
+    return nullptr;
+
+  std::optional<unsigned> inputRank = getTensorRank(input);
+  if (!inputRank || *inputRank != 0)
+    return nullptr;
+
+  if (auto valueTensorLiteralOp = input.getDefiningOp<ValueTensorLiteralOp>()) {
+    auto val = valueTensorLiteralOp.getValue()
+                   .cast<DenseFPElementsAttr>()
+                   .getSplatValue<FloatAttr>()
+                   .getValueAsDouble();
+    return rewriter.create<Torch::ConstantFloatOp>(
+        loc, rewriter.getF64FloatAttr(val));
+  } else if (auto primNumToTensorScalarOp =
+                 input.getDefiningOp<PrimNumToTensorScalarOp>()) {
+    return primNumToTensorScalarOp.getA();
+  } else if (auto tensorFloatOp = input.getDefiningOp<AtenTensorFloatOp>()) {
+    return tensorFloatOp.getT();
+  }
+  return nullptr;
+}
+
 //===----------------------------------------------------------------------===//
 // MethodOp
 //===----------------------------------------------------------------------===//
@@ -301,21 +337,20 @@ LogicalResult ClassTypeOp::verify() {
 // PrimLoopOp
 //===----------------------------------------------------------------------===//
 
-OperandRange
-PrimLoopOp::getEntrySuccessorOperands(std::optional<unsigned int> index) {
-  assert(index.has_value() && index.value() == 0);
+OperandRange PrimLoopOp::getEntrySuccessorOperands(RegionBranchPoint point) {
+  assert(point == getRegion());
   return getIterArgsInit();
 }
 
 void PrimLoopOp::getSuccessorRegions(
-    std::optional<unsigned> index, SmallVectorImpl<RegionSuccessor> &regions) {
-
-  if (!index.has_value()) {
-    regions.emplace_back(&getRegion(), getRegion().getArguments().slice(1));
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  Region &region = getRegion();
+  if (!point.getRegionOrNull()) {
+    regions.emplace_back(&region, region.getArguments().slice(1));
     return;
   }
-  assert(*index == 0);
-  regions.emplace_back(&getRegion(), getRegion().getArguments().slice(1));
+  assert(point == region);
+  regions.emplace_back(&region, region.getArguments().slice(1));
   regions.emplace_back(getResults());
 }
 
@@ -328,8 +363,8 @@ bool PrimLoopOp::isForLike() {
 // PrimLoopConditionOp
 //===----------------------------------------------------------------------===//
 
-MutableOperandRange PrimLoopConditionOp::getMutableSuccessorOperands(
-    std::optional<unsigned> index) {
+MutableOperandRange
+PrimLoopConditionOp::getMutableSuccessorOperands(RegionBranchPoint point) {
   // Pass all operands except the condition to the successor which is the
   // parent loop op.
   return getIterArgsMutable();
@@ -378,10 +413,10 @@ void PrimIfOp::print(OpAsmPrinter &p) {
   p.printOptionalAttrDict((*this)->getAttrs());
 }
 
-void PrimIfOp::getSuccessorRegions(std::optional<unsigned> index,
+void PrimIfOp::getSuccessorRegions(RegionBranchPoint point,
                                    SmallVectorImpl<RegionSuccessor> &regions) {
   // The `then` and the `else` region branch back to the parent operation.
-  if (index.has_value()) {
+  if (point.getRegionOrNull()) {
     regions.push_back(RegionSuccessor(getResults()));
     return;
   }
@@ -680,6 +715,8 @@ OpFoldResult AtenNeBoolOp::fold(FoldAdaptor adaptor) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult AtenSqueezeOp::fold(FoldAdaptor adaptor) {
+  if (getOperand().getType() != getResult().getType())
+    return nullptr;
   if (auto tensorType = getOperand().getType().dyn_cast<BaseTensorType>()) {
     if (tensorType.hasSizes() && tensorType.getSizes().size() == 0)
       return getOperand();
@@ -692,6 +729,8 @@ OpFoldResult AtenSqueezeOp::fold(FoldAdaptor adaptor) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult AtenSqueezeDimOp::fold(FoldAdaptor adaptor) {
+  if (getOperand(0).getType() != getResult().getType())
+    return nullptr;
   if (auto tensorType = getOperand(0).getType().dyn_cast<BaseTensorType>()) {
     if (tensorType.hasSizes() && tensorType.getSizes().size() == 0)
       return getOperand(0);
@@ -704,6 +743,8 @@ OpFoldResult AtenSqueezeDimOp::fold(FoldAdaptor adaptor) {
 //===----------------------------------------------------------------------===//
 
 OpFoldResult AtenRoundOp::fold(FoldAdaptor adaptor) {
+  if (getSelf().getType() != getResult().getType())
+    return nullptr;
   if (auto selfType = getSelf().getType().dyn_cast<BaseTensorType>()) {
     if (selfType.hasDtype() && selfType.getDtype().isa<mlir::IntegerType>())
       return getSelf();
@@ -876,6 +917,8 @@ OpFoldResult AtenViewOp::fold(FoldAdaptor adaptor) {
   auto resType = getType().dyn_cast<BaseTensorType>();
   if (!resType || !resType.hasSizes() || resType.getSizes().size() != 1)
     return nullptr;
+  if (inputType != resType)
+    return nullptr;
   // Fold when both the input tensor and result are unity rank tensors.
   return getOperand(0);
 }
@@ -926,6 +969,34 @@ void AtenLenTOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
     if (!size)
       return rewriter.notifyMatchFailure(op, "operand not AtenSizeOp");
     rewriter.replaceOpWithNewOp<AtenDimOp>(op, size.getOperand());
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// AtenMinOtherOp
+//===----------------------------------------------------------------------===//
+
+void AtenMinOtherOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                 MLIRContext *context) {
+  // `aten.min.other` -> `aten.minimum`
+  patterns.add(+[](AtenMinOtherOp op, PatternRewriter &rewriter) {
+    rewriter.replaceOpWithNewOp<AtenMinimumOp>(op, op.getType(), op.getSelf(),
+                                               op.getOther());
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// AtenMaxOtherOp
+//===----------------------------------------------------------------------===//
+
+void AtenMaxOtherOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                 MLIRContext *context) {
+  // `aten.max.other` -> `aten.maximum`
+  patterns.add(+[](AtenMaxOtherOp op, PatternRewriter &rewriter) {
+    rewriter.replaceOpWithNewOp<AtenMaximumOp>(op, op.getType(), op.getSelf(),
+                                                op.getOther());
     return success();
   });
 }
@@ -1091,6 +1162,22 @@ void AtenMulTensorOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 //===----------------------------------------------------------------------===//
+// AtenFloorOp
+//===----------------------------------------------------------------------===//
+void AtenFloorOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                              MLIRContext *context) {
+  patterns.add(+[](AtenFloorOp op, PatternRewriter &rewriter) {
+    auto outputTy = op.getType().dyn_cast<ValueTensorType>();
+    if (outputTy && outputTy.hasDtype() &&
+        outputTy.getDtype().isa<mlir::IntegerType>()) {
+      rewriter.replaceOp(op, op.getSelf());
+      return success();
+    }
+    return failure();
+  });
+}
+
+//===----------------------------------------------------------------------===//
 // AtenMulScalarOp
 //===----------------------------------------------------------------------===//
 void AtenMulScalarOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
@@ -1107,6 +1194,40 @@ void AtenDivTensorModeOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
   patterns.add(+[](AtenDivTensorModeOp op, PatternRewriter &rewriter) {
     return rewrite0DBinaryTensorOp(op, rewriter);
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// AtenNumelOp
+//===----------------------------------------------------------------------===//
+void AtenNumelOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                              MLIRContext *context) {
+  patterns.add(+[](AtenNumelOp op, PatternRewriter &rewriter) {
+    auto inputType = op.getSelf().getType().dyn_cast<BaseTensorType>();
+    if (!inputType || !inputType.areAllSizesKnown()) {
+      return failure();
+    }
+    auto sizes = inputType.getSizes();
+    int64_t numel = 1;
+    for (int64_t d : sizes) {
+      numel *= d;
+    }
+    rewriter.replaceOpWithNewOp<ConstantIntOp>(
+        op, rewriter.getI64IntegerAttr(numel));
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// Aten__Or__TensorOp
+//===----------------------------------------------------------------------===//
+
+void Aten__Or__TensorOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(+[](Aten__Or__TensorOp op, PatternRewriter &rewriter) {
+    rewriter.replaceOpWithNewOp<AtenBitwiseOrTensorOp>(
+        op, op.getType(), op.getSelf(), op.getOther());
+    return success();
   });
 }
 
@@ -1444,7 +1565,7 @@ OpFoldResult AtenAnyBoolOp::fold(FoldAdaptor adaptor) {
     return nullptr;
   // If any operand is a constant true, return true.
   for (auto operand : inputConstruct.getOperands()) {
-    bool b;
+    bool b = false;
     if (matchPattern(operand, m_TorchConstantBool(&b)) && b) {
       return getI1IntegerAttr(getContext(), true);
     }
@@ -1513,6 +1634,27 @@ OpFoldResult AtenIntBoolOp::fold(FoldAdaptor adaptor) {
 }
 
 //===----------------------------------------------------------------------===//
+// AtenMaskedFillTensorOp
+//===----------------------------------------------------------------------===//
+
+// Fold 0d fill tensor to scalar
+void AtenMaskedFillTensorOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(+[](AtenMaskedFillTensorOp op, PatternRewriter &rewriter) {
+    auto scalarIntVal =
+        getScalarIntValue(op.getValue(), op->getLoc(), rewriter);
+    auto scalarFloatVal =
+        getScalarFloatValue(op.getValue(), op->getLoc(), rewriter);
+    if (!scalarIntVal && !scalarFloatVal)
+      return failure();
+    Value scalarVal = scalarIntVal ? scalarIntVal : scalarFloatVal;
+    rewriter.replaceOpWithNewOp<AtenMaskedFillScalarOp>(
+        op, op.getType(), op.getSelf(), op.getMask(), scalarVal);
+    return failure();
+  });
+}
+
+//===----------------------------------------------------------------------===//
 // AtenSortIntOp
 //===----------------------------------------------------------------------===//
 
@@ -1554,7 +1696,9 @@ LogicalResult NonValueTensorLiteralOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  auto attr = attributes.get("value").dyn_cast_or_null<ElementsAttr>();
+  auto attr = properties.as<Properties *>()
+                  ->getValue()
+                  .dyn_cast_or_null<ElementsAttr>();
   if (!attr)
     return failure();
   RankedTensorType tensorType = attr.getType().cast<RankedTensorType>();
@@ -1594,7 +1738,9 @@ LogicalResult ValueTensorLiteralOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  auto attr = attributes.get("value").dyn_cast_or_null<ElementsAttr>();
+  auto attr = properties.as<Properties *>()
+                  ->getValue()
+                  .dyn_cast_or_null<ElementsAttr>();
   if (!attr)
     return failure();
   RankedTensorType tensorType = attr.getType().cast<RankedTensorType>();
@@ -2303,18 +2449,31 @@ OpFoldResult AtenCatOp::fold(FoldAdaptor adaptor) {
   auto list = getOperand(0).getDefiningOp<PrimListConstructOp>();
   if (!list || !list->hasOneUse() || list.getElements().size() != 1)
     return nullptr;
+  if (list.getElements()[0].getType() != getResult().getType())
+    return nullptr;
   return list.getElements()[0];
 }
 
 //===----------------------------------------------------------------------===//
-// AtenStackOp
+// AtenBroadcastToOp
 //===----------------------------------------------------------------------===//
 
-OpFoldResult AtenStackOp::fold(FoldAdaptor adaptor) {
-  auto list = getOperand(0).getDefiningOp<PrimListConstructOp>();
-  if (!list || !list->hasOneUse() || list.getElements().size() != 1)
+OpFoldResult AtenBroadcastToOp::fold(FoldAdaptor adaptor) {
+  auto inType = getOperand(0).getType().dyn_cast<BaseTensorType>();
+  auto outType = getResult().getType().dyn_cast<BaseTensorType>();
+  if (inType != outType)
     return nullptr;
-  return list.getElements()[0];
+  if (!inType || !outType || !inType.hasSizes() || !outType.hasSizes())
+    return nullptr;
+  if (inType.getSizes().size() != outType.getSizes().size() ||
+      (!isAssumingStrictSymbolicShapes((*this)->getBlock()) &&
+       (!inType.areAllSizesKnown() || !outType.areAllSizesKnown())))
+    return nullptr;
+  for (size_t i = 0; i < inType.getSizes().size(); ++i) {
+    if (inType.getSizes()[i] != outType.getSizes()[i])
+      return nullptr;
+  }
+  return getOperand(0);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2333,6 +2492,8 @@ OpFoldResult AtenSliceTensorOp::fold(FoldAdaptor adaptor) {
 
   auto inType = getOperand(0).getType().dyn_cast<BaseTensorType>();
   auto outType = getResult().getType().dyn_cast<BaseTensorType>();
+  if (inType != outType)
+    return nullptr;
   if (!inType || !outType || !inType.hasSizes() || !outType.hasSizes())
     return nullptr;
   if (inType.getSizes().size() != outType.getSizes().size() ||
@@ -2708,26 +2869,26 @@ OpFoldResult PrimMinIntOp::fold(FoldAdaptor adaptor) {
 
 template <typename CalculateOp>
 static void
-getSuccessorRegionsForCalculateOp(CalculateOp op, std::optional<unsigned> index,
+getSuccessorRegionsForCalculateOp(CalculateOp op, RegionBranchPoint point,
                                   SmallVectorImpl<RegionSuccessor> &regions) {
-  if (!index.has_value()) {
+  if (!point.getRegionOrNull()) {
     // First thing the op does is branch into the calculation.
     regions.emplace_back(&op.getCalculation());
     return;
   }
-  if (*index == 0) {
+  if (point == op.getBody()) {
     // Body returns control to the outer op, passing through results.
     regions.emplace_back(op.getResults());
     return;
   }
-  assert(*index == 1);
+  assert(point == op.getCalculation());
   // Calculation branches to the body.
   regions.emplace_back(&op.getBody());
 }
 
 void ShapeCalculateOp::getSuccessorRegions(
-    std::optional<unsigned> index, SmallVectorImpl<RegionSuccessor> &regions) {
-  getSuccessorRegionsForCalculateOp(*this, index, regions);
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  getSuccessorRegionsForCalculateOp(*this, point, regions);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2735,8 +2896,8 @@ void ShapeCalculateOp::getSuccessorRegions(
 //===----------------------------------------------------------------------===//
 
 void DtypeCalculateOp::getSuccessorRegions(
-    std::optional<unsigned> index, SmallVectorImpl<RegionSuccessor> &regions) {
-  getSuccessorRegionsForCalculateOp(*this, index, regions);
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  getSuccessorRegionsForCalculateOp(*this, point, regions);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2744,7 +2905,7 @@ void DtypeCalculateOp::getSuccessorRegions(
 //===----------------------------------------------------------------------===//
 
 MutableOperandRange ShapeCalculateYieldShapesOp::getMutableSuccessorOperands(
-    std::optional<unsigned> index) {
+    RegionBranchPoint point) {
   // The shape operands don't get forwarded to the body.
   // MutableOperandRange always has an owning operation, even if empty, so
   // create a 0-length range.
@@ -2758,12 +2919,102 @@ LogicalResult ShapeCalculateYieldShapesOp::verify() {
   return success();
 }
 
+LogicalResult AtenPermuteOp::verify() {
+
+  // Verification of the permute op for input & output dimensions with
+  // statically known sizes.
+
+  SmallVector<Value> permutation;
+  auto permutationObtained = getListConstructElements(getDims(), permutation);
+  if (!permutationObtained) {
+    return success();
+  }
+
+  auto outType = getResult().getType().cast<BaseTensorType>();
+  auto inType = getSelf().getType().cast<BaseTensorType>();
+
+  if (!outType.hasSizes() || !inType.hasSizes()) {
+    return success();
+  }
+
+  auto outShape = outType.getSizes();
+  auto inShape = inType.getSizes();
+
+  auto outRank = outShape.size();
+
+  if (outRank != inShape.size()) {
+    return emitOpError(
+               "expected input and output tensors to have same rank, but ")
+           << inShape.size() << " != " << outRank << '.';
+  }
+
+  if (outRank != permutation.size()) {
+    return emitOpError() << "expected permutation to have size equal result "
+                            "tensor rank. The permutation has "
+                         << permutation.size()
+                         << " elements, the output has rank " << outRank << '.';
+  }
+
+
+  // Initialization of the reverse permutation. -1 denotes an unknown
+  // permutation index.
+  SmallVector<int64_t> reversePermutation(outRank, -1);
+
+  // In this loop:
+  //  (1) check that the permutation indices are in bounds, and not duplicated.
+  //  (2) populate reversePermutation (to check for duplicates).
+  //  (3) check that the input and output shapes agree with the permutation. For
+  //  example, if the permutation is (1,2,0) and the input shape is (2,3,5),
+  //  then the output shape must be (3,5,2).
+
+  for (uint64_t to = 0; to < outRank; ++to) {
+    int64_t from;
+
+    auto fromIsSet = matchPattern(permutation[to], m_TorchConstantInt(&from));
+
+    if (!fromIsSet) {
+      continue;
+    }
+
+    // if 'from' is the unkwown index, continue.
+    if (from == -1) {
+      continue;
+    }
+
+    if (!isValidDim(from, outRank)) {
+      return emitError("observed invalid index in permutation (")
+             << from << ") for input tensor of rank " << outRank << '.';
+    }
+
+    if (reversePermutation[from] != -1) {
+      return emitOpError("has a duplicate dimension (")
+             << from << ") in its permutation " << getDims() << '.';
+    }
+    reversePermutation[from] = to;
+
+    auto dimSizesDefined =
+        inShape[from] != kUnknownSize && outShape[to] != kUnknownSize;
+    auto dimSizesDifferent = inShape[from] != outShape[to];
+
+    if (dimSizesDefined && dimSizesDifferent) {
+      return emitOpError("has a permutation which is not compatible with the "
+                         "input and output shapes. ")
+             << "The input shape in dimension " << from << " is "
+             << inShape[from] << ", and the output shape in dimension " << to
+             << " is " << outShape[to]
+             << " : they should be the same with this permutation. ";
+    }
+  }
+
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // DtypeCalculateYieldDtypesOp
 //===----------------------------------------------------------------------===//
 
 MutableOperandRange DtypeCalculateYieldDtypesOp::getMutableSuccessorOperands(
-    std::optional<unsigned> index) {
+    RegionBranchPoint point) {
   // The dtype operands don't get forwarded to the body.
   // MutableOperandRange always has an owning operation, even if empty, so
   // create a 0-length range.

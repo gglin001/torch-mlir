@@ -11,6 +11,7 @@
 
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
+#include "torch-mlir/Dialect/Torch/IR/TorchTypes.h"
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 
 namespace mlir {
@@ -26,9 +27,8 @@ bool getListConstructElements(Value v, SmallVectorImpl<Value> &elems);
 std::optional<int64_t> matchLegalConstantIndexIntoListOfSize(Value v,
                                                              int64_t length);
 torch_upstream::ScalarType getScalarTypeForType(Type type);
-FailureOr<Type> getTypeForScalarType(
-    MLIRContext *context, torch_upstream::ScalarType dtypeInt,
-    mlir::IntegerType::SignednessSemantics signedness = IntegerType::Signed);
+FailureOr<Type> getTypeForScalarType(MLIRContext *context,
+                                     torch_upstream::ScalarType dtypeInt);
 
 Type getTypeForTorchType(
     MLIRContext *context, Type type,
@@ -54,13 +54,21 @@ Type getBuiltInTypeForTorchScalar(Type type);
 
 Value getDtypeIntValueForType(PatternRewriter &rewriter, Location loc,
                               Type dtype);
+
+// Checks whether the `inputA` and `inputB` are broadcast compatible or not. If
+// yes, then computes the final broadcast shape.
+void computeBroadcastShape(PatternRewriter &rewriter, Location loc,
+                           Value inputA, Value inputB,
+                           SmallVector<int64_t> &resultShape,
+                           SmallVector<Value> &resultShapeValue);
+
 // Helper to convert a tensor to a specific scalar type.
 Value convertTensorToDtype(PatternRewriter &rewriter, Location loc, Value input,
                            Type dtype);
 
 bool isBuiltInType(Type type);
 
-// Helper funtion to get rank of `Base tensor type`.
+// Helper function to get rank of `Base tensor type`.
 // std::nullopt is returned if the tensorRank can't be determined.
 std::optional<unsigned> getTensorRank(Value tensor);
 
@@ -85,6 +93,44 @@ FailureOr<Value> squeezeTensor(PatternRewriter &rewriter, Operation *op,
 // Return the unsqueezed tensor or failure.
 FailureOr<Value> unsqueezeTensor(PatternRewriter &rewriter, Operation *op,
                                  Value input, Value dim);
+
+// In Dynamo import paths, we can assume that dynamic dimensions are strictly
+// quantities and are not ambiguous with '1' symbols that can be interpreted
+// to signal an expansion in various broadcasting scenarios. In the
+// torch.compile eager path, this precondition is assured by guards on 0/1
+// dimension values, and on the torch.export graph-capture path, the shape
+// solver guarantees this.
+//
+// We let lowerings assume this on a per-scope basis if the
+// torch.assume_strict_symbolic_shapes unit attribute is present on any parent
+// of the block.
+bool isAssumingStrictSymbolicShapes(Block *scope);
+
+// Helper that uses the block from an OpBuilder for determining whether we
+// are assuming strict symbolic shapes.
+inline bool isAssumingStrictSymbolicShapes(OpBuilder &builder) {
+  return isAssumingStrictSymbolicShapes(builder.getBlock());
+}
+
+// Helper function for AtenEmptyStrided and friends that checks if the stride
+// values are default or not. Throws a runtime assert if not.
+LogicalResult checkDefaultStrideHelper(Operation *op, PatternRewriter &rewriter,
+                                       Value opSize, Value opStride,
+                                       Location loc);
+
+// Helper to create a tensor filled with the given scalar. Scalar would be
+// converted the to the element type of the given tensor type.
+Value createInitTensor(PatternRewriter &rewriter, Location loc,
+                              BaseTensorType resultType, Value scalar,
+                              Value sizeList);
+
+// Helper to create a rank 0 tensor filled with the given `scalar`. `scalar`
+// would be converted to the element type of the given `inputType`.
+Value createRank0Tensor(PatternRewriter &rewriter, Location loc,
+                        BaseTensorType inputType, Value scalar);
+
+LogicalResult getTransposedType(BaseTensorType inType, int64_t dimA,
+                                int64_t dimB, Type &transposedType);
 
 } // namespace Torch
 } // namespace torch
