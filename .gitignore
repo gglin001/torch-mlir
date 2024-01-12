@@ -35,3 +35,5 @@ llvm-build/
 
 # C++ build artifacts
 compile_commands.json
+
+.DS_Store
