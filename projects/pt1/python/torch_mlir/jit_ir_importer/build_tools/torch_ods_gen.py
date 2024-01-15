@@ -315,6 +315,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
             "aten::log10 : (Tensor) -> (Tensor)",
             "aten::sqrt : (Tensor) -> (Tensor)",
             "aten::log1p : (Tensor) -> (Tensor)",
+            "aten::logit : (Tensor, float?) -> (Tensor)",
             "aten::rsqrt : (Tensor) -> (Tensor)",
             "aten::abs : (Tensor) -> (Tensor)",
             "aten::reciprocal : (Tensor) -> (Tensor)",
@@ -803,6 +804,13 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::native_dropout_backward : (Tensor, Tensor, float) -> (Tensor)")
     emit("aten::elu_backward : (Tensor, Scalar, Scalar, Scalar, bool, Tensor) -> (Tensor)")
     emit("aten::leaky_relu_backward : (Tensor, Tensor, Scalar, bool) -> (Tensor)")
+
+    # quantized ops
+    emit("aten::quantize_per_tensor : (Tensor, float, int, int) -> (Tensor)")
+    emit("aten::dequantize.self : (Tensor) -> (Tensor)")
+    emit("aten::dequantize.tensor : (Tensor) -> (Tensor)")
+    emit("aten::int_repr : (Tensor) -> (Tensor)")
+    emit("aten::_make_per_tensor_quantized_tensor : (Tensor, float, int) -> (Tensor)")
 
     # ==========================================================================
     # `prim::` namespace.

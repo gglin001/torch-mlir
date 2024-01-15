@@ -141,6 +141,9 @@ def aten〇log10〡shape(self: List[int]) -> List[int]:
 def aten〇log1p〡shape(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
+def aten〇logit〡shape(self: List[int], eps: Optional[float] = None) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
 def aten〇rsqrt〡shape(self: List[int]) -> List[int]:
     return upstream_shape_functions.unary(self)
 
@@ -216,6 +219,21 @@ def aten〇clamp_max〡shape(self: List[int], max: float) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇rsub〇Scalar〡shape(self: List[int], other: float, alpha: float = 1) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇quantize_per_tensor〡shape(self: List[int], scale: float, zero_point: int, dtype: int) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇dequantize〇self〡shape(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇dequantize〇tensor〡shape(qtensor: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(qtensor)
+
+def aten〇int_repr〡shape(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇_make_per_tensor_quantized_tensor〡shape(self: List[int], scale: float, zero_point: int) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def prims〇convert_element_type〡shape(a: List[int], dtype: int) -> List[int]:
@@ -1656,6 +1674,11 @@ def aten〇log10〡dtype(self_rank_dtype: Tuple[int, int]) -> int:
 
 @check_dtype_function(_check_tensors_with_the_same_dtype(num_of_tensors=1))
 def aten〇log1p〡dtype(self_rank_dtype: Tuple[int, int]) -> int:
+    self_rank, self_dtype = self_rank_dtype
+    return _get_dtype_of_floating_point_op(self_dtype)
+
+@check_dtype_function(_check_tensors_with_the_same_dtype(num_of_tensors=1))
+def aten〇logit〡dtype(self_rank_dtype: Tuple[int, int], eps: Optional[float] = None) -> int:
     self_rank, self_dtype = self_rank_dtype
     return _get_dtype_of_floating_point_op(self_dtype)
 
@@ -3948,6 +3971,34 @@ def prims〇squeeze〡dtype(a_rank_dtype: Tuple[int, int], dimensions: List[int]
 def prims〇collapse〡dtype(a_rank_dtype: Tuple[int, int], start: int, end: int) -> int:
     a_rank, a_dtype = a_rank_dtype
     return a_dtype
+
+
+def aten〇quantize_per_tensor〡dtype(self_rank_dtype: Tuple[int, int], scale: float, zero_point: int, dtype: int) -> int:
+    return dtype
+
+def aten〇dequantize〇self〡dtype(self_rank_dtype: Tuple[int, int]) -> int:
+    return torch.float32
+
+def aten〇dequantize〇tensor〡dtype(qtensor_rank_dtype: Tuple[int, int]) -> int:
+    return torch.float32
+
+def aten〇int_repr〡dtype(self_rank_dtype: Tuple[int, int]) -> int:
+    self_rank, self_dtype = self_rank_dtype
+    if (self_dtype == torch.quint8):
+        return torch.uint8
+    if (self_dtype == torch.qint8):
+        return torch.int8
+    return torch.int32
+
+def aten〇_make_per_tensor_quantized_tensor〡dtype(self_rank_dtype: Tuple[int, int], scale: float, zero_point: int) -> int:
+    self_rank, self_dtype = self_rank_dtype
+    if (self_dtype == torch.uint8):
+      return torch.quint8
+    if (self_dtype == torch.int8):
+      return torch.qint8
+    return torch.qint32
+
+
 
 
 
