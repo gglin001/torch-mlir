@@ -1,6 +1,8 @@
 # onnx.slice issue
 
-## cvt
+## use onnx_importer
+
+- cvt
 
 build torch-mlir(optional iree) first, and deps
 
@@ -20,7 +22,7 @@ torch-mlir-opt \
     issues/onnx_slice/slice_op.onnx.mlir
 ```
 
-## convert to stablehlo
+- convert to stablehlo
 
 ```bash
 # stablehlo
@@ -45,11 +47,10 @@ issues/onnx_slice/slice_op.onnx.mlir.torch.mlir:18:11: error: failed to legalize
 issues/onnx_slice/slice_op.onnx.mlir.torch.mlir:18:11: note: see current operation: %41 = "torch.aten.slice.Tensor"(%arg0, %34, %22, %28, %40) : (!torch.vtensor<[1,56,56,128],f32>, !torch.int, !torch.int, !torch.int, !torch.int) -> !torch.vtensor<[1,53,56,128],f32>
 ```
 
-## iree-compile
+- iree-compile
 
 ```bash
 path_to/iree-compile \
-/Users/allen/repos/iree/build/install/bin/iree-compile \
     --iree-hal-target-backends=llvm-cpu \
     -o issues/onnx_slice/slice_op.onnx.mlir.torch.mlir.iree.vmfb \
     issues/onnx_slice/slice_op.onnx.mlir.torch.mlir
@@ -70,4 +71,38 @@ issues/onnx_slice/slice_op.onnx.mlir.torch.mlir:18:11: error: failed to legalize
     %13 = torch.aten.slice.Tensor %arg0, %10, %6, %8, %12 : !torch.vtensor<[1,56,56,128],f32>, !torch.int, !torch.int, !torch.int, !torch.int -> !torch.vtensor<[1,53,56,128],f32>
           ^
 issues/onnx_slice/slice_op.onnx.mlir.torch.mlir:18:11: note: see current operation: %55 = "torch.aten.slice.Tensor"(%arg0, %45, %27, %36, %54) : (!torch.vtensor<[1,56,56,128],f32>, !torch.int, !torch.int, !torch.int, !torch.int) -> !torch.vtensor<[1,53,56,128],f32>
+```
+
+## use fx_import
+
+```bash
+# gen issues/onnx_slice/slice_op.fx_import.mlir
+python issues/onnx_slice/fx_import.py
+```
+
+stablehlo, works
+
+```bash
+# stablehlo
+# gen issues/onnx_slice/slice_op.fx_import.mlir.stablehlo.mlir
+torch-mlir-opt \
+    --convert-torch-to-stablehlo \
+    -o issues/onnx_slice/slice_op.fx_import.mlir.stablehlo.mlir \
+    issues/onnx_slice/slice_op.fx_import.mlir
+```
+
+iree-compile, works
+
+```bash
+path_to/iree-compile \
+    --iree-hal-target-backends=llvm-cpu \
+    -o issues/onnx_slice/slice_op.fx_import.mlir.iree.vmfb \
+    issues/onnx_slice/slice_op.fx_import.mlir
+
+path_to/iree-run-module \
+    --device=local-task \
+    --module=issues/onnx_slice/slice_op.fx_import.mlir.iree.vmfb \
+    --function=main \
+    --input=1x56x56x128xf32=0.01 \
+    --output=@iree_out.npy
 ```
