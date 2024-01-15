@@ -1311,6 +1311,27 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
             binder.op, resultType, data, dimValueList);
         return success();
       });
+  patterns.onOp(
+      "Flatten", 13, [](OpBinder binder, ConversionPatternRewriter &rewriter) {
+        Torch::ValueTensorType resultType;
+        Value operand;
+        Value start_dim, end_dim;
+        int64_t axis;
+        binder.s64IntegerAttr(axis, "axis");
+        start_dim = rewriter.create<Torch::ConstantIntOp>(
+            binder.getLoc(), rewriter.getType<Torch::IntType>(),
+            rewriter.getIntegerAttr(rewriter.getIntegerType(64), axis));
+        end_dim = rewriter.create<Torch::ConstantIntOp>(
+            binder.getLoc(), rewriter.getType<Torch::IntType>(),
+            rewriter.getIntegerAttr(rewriter.getIntegerType(64), axis + 1));
+
+        if (binder.tensorOperand(operand) ||
+            binder.tensorResultType(resultType))
+          return failure();
+        rewriter.replaceOpWithNewOp<Torch::AtenFlattenUsingIntsOp>(
+            binder.op, resultType, operand, start_dim, end_dim);
+        return success();
+      });
   patterns.onOp("Floor", 13,
                 [](OpBinder binder, ConversionPatternRewriter &rewriter) {
                   Torch::ValueTensorType resultType;
