@@ -50,7 +50,7 @@ issues/onnx_slice/slice_op.onnx.mlir.torch.mlir:18:11: note: see current operati
 - iree-compile
 
 ```bash
-path_to/iree-compile \
+iree-compile \
     --iree-hal-target-backends=llvm-cpu \
     -o issues/onnx_slice/slice_op.onnx.mlir.torch.mlir.iree.vmfb \
     issues/onnx_slice/slice_op.onnx.mlir.torch.mlir
@@ -106,3 +106,10 @@ path_to/iree-run-module \
     --input=1x56x56x128xf32=0.01 \
     --output=@iree_out.npy
 ```
+
+iree-run-module \
+ --device=local-task \
+ --module=issues/onnx_slice/slice_op.onnx.mlir.torch.mlir.iree.vmfb \
+ --function=main_graph \
+ --input=1x56x56x128xf32=0.01 \
+ --output=-
