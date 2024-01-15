@@ -12,7 +12,7 @@ torch-mlir-opt \
 
 # stablehlo
 torch-mlir-opt \
-    --convert-torch-to-stablehlo \
+    --pass-pipeline='builtin.module(torch-simplification-pipeline{decompose-complex-ops},torch-backend-to-stablehlo-backend-pipeline)' \
     -o issues/onnx_slice_2/slice_op.onnx.mlir.torch.stablehlo.mlir \
     issues/onnx_slice_2/slice_op.onnx.mlir.torch.mlir
 

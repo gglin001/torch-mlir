@@ -86,7 +86,7 @@ stablehlo, works
 # stablehlo
 # gen issues/onnx_slice/slice_op.fx_import.mlir.stablehlo.mlir
 torch-mlir-opt \
-    --convert-torch-to-stablehlo \
+    --pass-pipeline='builtin.module(torch-simplification-pipeline{decompose-complex-ops},torch-backend-to-stablehlo-backend-pipeline)' \
     -o issues/onnx_slice/slice_op.fx_import.mlir.stablehlo.mlir \
     issues/onnx_slice/slice_op.fx_import.mlir
 ```
