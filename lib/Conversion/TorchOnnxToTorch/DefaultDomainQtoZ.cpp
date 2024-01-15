@@ -1356,6 +1356,7 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
             binder.getLoc(), rewriter.getType<Torch::IntType>(),
             rewriter.getIntegerAttr(rewriter.getIntegerType(64), 0));
         if (allowzero == 0) {
+#if 0
           // convert shape (tensor) into torch int list while dealing with zero
           // vals
           for (int i = 0; i < shapeSizes[0]; i++) {
@@ -1392,6 +1393,28 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
                 binder.getLoc(), dim, finalOffset);
             dimList.push_back(finalDim);
           }
+#else
+          for (int i = 0; i < shapeSizes[0]; i++) {
+            auto literal =
+                dyn_cast<Torch::ValueTensorLiteralOp>(shape.getDefiningOp());
+            int64_t dim_v;
+            if (auto dense_resource =
+                    literal.getValueAttr()
+                        .dyn_cast<DenseI64ResourceElementsAttr>()) {
+              dim_v = dense_resource.tryGetAsArrayRef()->data()[i];
+            } else if (auto dense_resource =
+                           literal.getValueAttr()
+                               .dyn_cast<DenseIntElementsAttr>()) {
+              dim_v = dense_resource.getValues<int64_t>()[i];
+            } else {
+              return failure();
+            }
+            Value dim = rewriter.create<Torch::ConstantIntOp>(
+                binder.getLoc(), rewriter.getType<Torch::IntType>(),
+                rewriter.getIntegerAttr(rewriter.getIntegerType(64), dim_v));
+            dimList.push_back(dim);
+          }
+#endif
           Value dimValueList = rewriter.create<Torch::PrimListConstructOp>(
               binder.getLoc(),
               Torch::ListType::get(
