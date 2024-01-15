@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "torch-mlir/Conversion/TorchOnnxToTorch/Patterns.h"
+#include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -1219,7 +1220,7 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
         }
         auto intermediateType = Torch::ValueTensorType::get(
             context, intermediateShape, resultTorchType.getOptionalDtype());
-#ifdef TEST_MODE
+#if 0
         for (int i = 0; i < numAxes; ++i) {
 
           Value k = rewriter.create<Torch::ConstantIntOp>(
@@ -1244,11 +1245,17 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
               loc, sliceType, operand, axis, start, end, step);
         }
 #else
+        (void)(select);
+
         for (int i = 0; i < numAxes; ++i) {
           Value start;
           Value end;
           Value axis;
           Value step;
+          // deal `onnx.Constant`, eg:
+          // `%0 = torch.operator "onnx.Constant"() {torch.onnx.value =
+          // dense_resource<_> : tensor<1xsi64>} : () ->
+          // !torch.vtensor<[1],si64>`
           if (starts.getDefiningOp()->hasAttr("torch.onnx.value")) {
             auto attr = starts.getDefiningOp()->getAttr("torch.onnx.value");
             int64_t value = attr.dyn_cast<DenseI64ResourceElementsAttr>()
@@ -1273,6 +1280,42 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
           if (steps.getDefiningOp()->hasAttr("torch.onnx.value")) {
             auto attr = steps.getDefiningOp()->getAttr("torch.onnx.value");
             int64_t value = attr.dyn_cast<DenseI64ResourceElementsAttr>()
+                                .tryGetAsArrayRef()
+                                ->data()[i];
+            step = rewriter.create<Torch::ConstantIntOp>(loc, value);
+          }
+          // deal `torch.vtensor.literal`, eg:
+          // `%0
+          // =torch.vtensor.literal(dense_resource<_model.patch_embed.proj.weight>
+          // : tensor<128x3x4x4xf32>) : !torch.vtensor<[128,3,4,4],f32>`
+          if (auto literal = dyn_cast<Torch::ValueTensorLiteralOp>(
+                  starts.getDefiningOp())) {
+            int64_t value = literal.getValueAttr()
+                                .dyn_cast<DenseI64ResourceElementsAttr>()
+                                .tryGetAsArrayRef()
+                                ->data()[i];
+            start = rewriter.create<Torch::ConstantIntOp>(loc, value);
+          }
+          if (auto literal =
+                  dyn_cast<Torch::ValueTensorLiteralOp>(ends.getDefiningOp())) {
+            int64_t value = literal.getValueAttr()
+                                .dyn_cast<DenseI64ResourceElementsAttr>()
+                                .tryGetAsArrayRef()
+                                ->data()[i];
+            end = rewriter.create<Torch::ConstantIntOp>(loc, value);
+          }
+          if (auto literal =
+                  dyn_cast<Torch::ValueTensorLiteralOp>(axes.getDefiningOp())) {
+            int64_t value = literal.getValueAttr()
+                                .dyn_cast<DenseI64ResourceElementsAttr>()
+                                .tryGetAsArrayRef()
+                                ->data()[i];
+            axis = rewriter.create<Torch::ConstantIntOp>(loc, value);
+          }
+          if (auto literal = dyn_cast<Torch::ValueTensorLiteralOp>(
+                  steps.getDefiningOp())) {
+            int64_t value = literal.getValueAttr()
+                                .dyn_cast<DenseI64ResourceElementsAttr>()
                                 .tryGetAsArrayRef()
                                 ->data()[i];
             step = rewriter.create<Torch::ConstantIntOp>(loc, value);
