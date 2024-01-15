@@ -1219,6 +1219,7 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
         }
         auto intermediateType = Torch::ValueTensorType::get(
             context, intermediateShape, resultTorchType.getOptionalDtype());
+#ifdef TEST_MODE
         for (int i = 0; i < numAxes; ++i) {
 
           Value k = rewriter.create<Torch::ConstantIntOp>(
@@ -1242,7 +1243,48 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
           operand = rewriter.create<Torch::AtenSliceTensorOp>(
               loc, sliceType, operand, axis, start, end, step);
         }
+#else
+        for (int i = 0; i < numAxes; ++i) {
+          Value start;
+          Value end;
+          Value axis;
+          Value step;
+          if (starts.getDefiningOp()->hasAttr("torch.onnx.value")) {
+            auto attr = starts.getDefiningOp()->getAttr("torch.onnx.value");
+            int64_t value = attr.dyn_cast<DenseI64ResourceElementsAttr>()
+                                .tryGetAsArrayRef()
+                                ->data()[i];
+            start = rewriter.create<Torch::ConstantIntOp>(loc, value);
+          }
+          if (ends.getDefiningOp()->hasAttr("torch.onnx.value")) {
+            auto attr = ends.getDefiningOp()->getAttr("torch.onnx.value");
+            int64_t value = attr.dyn_cast<DenseI64ResourceElementsAttr>()
+                                .tryGetAsArrayRef()
+                                ->data()[i];
+            end = rewriter.create<Torch::ConstantIntOp>(loc, value);
+          }
+          if (axes.getDefiningOp()->hasAttr("torch.onnx.value")) {
+            auto attr = axes.getDefiningOp()->getAttr("torch.onnx.value");
+            int64_t value = attr.dyn_cast<DenseI64ResourceElementsAttr>()
+                                .tryGetAsArrayRef()
+                                ->data()[i];
+            axis = rewriter.create<Torch::ConstantIntOp>(loc, value);
+          }
+          if (steps.getDefiningOp()->hasAttr("torch.onnx.value")) {
+            auto attr = steps.getDefiningOp()->getAttr("torch.onnx.value");
+            int64_t value = attr.dyn_cast<DenseI64ResourceElementsAttr>()
+                                .tryGetAsArrayRef()
+                                ->data()[i];
+            step = rewriter.create<Torch::ConstantIntOp>(loc, value);
+          }
 
+          auto sliceType = intermediateType;
+          if (i == numAxes - 1)
+            sliceType = resultTorchType;
+          operand = rewriter.create<Torch::AtenSliceTensorOp>(
+              loc, sliceType, operand, axis, start, end, step);
+        }
+#endif
         rewriter.replaceOp(binder.op, operand);
         return success();
       });
