@@ -9,6 +9,7 @@
 
 #include "torch-mlir/Conversion/TorchOnnxToTorch/Patterns.h"
 #include "torch-mlir/Conversion/TorchOnnxToTorch/Utils.h"
+#include "torch-mlir/Dialect/Torch/IR/TorchTypes.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 
 using namespace mlir;
@@ -358,7 +359,7 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
           }
           indexElemCount *= dim;
         }
-
+#if 0
         // We collapse indices into a (`indexElemCount`,) unary tensor,
         // materialize all the non-axis dimension wrt data shape.
         SmallVector<int64_t> collapsedIndexShape(dataRank, 1);
@@ -446,6 +447,39 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
         rewriter.replaceOpWithNewOp<Torch::AtenViewOp>(
             binder.op, resultType, expandedGather, resultSizeList);
         return success();
+#else
+        // TensorLiteral
+        auto si64Type =
+            IntegerType::get(data.getContext(), 64, IntegerType::Signed);
+        // int64_t intValue = 0;
+        auto ValueTensoAttr = DenseElementsAttr::get(
+            RankedTensorType::get({0}, si64Type), {APInt::getZero(64)});
+        auto ValueTensorLiteralType =
+            Torch::ValueTensorType::get(data.getContext(), {0}, si64Type);
+        Value ValueTensorLiteral = rewriter.create<Torch::ValueTensorLiteralOp>(
+            loc, ValueTensorLiteralType, ValueTensoAttr);
+        // index
+        Value indicesList = rewriter.create<Torch::PrimListConstructOp>(
+            loc,
+            Torch::ListType::get(
+                Torch::OptionalType::get(ValueTensorLiteralType)),
+            ValueRange{ValueTensorLiteral});
+        Value afterIndex = rewriter.create<Torch::AtenIndexTensorOp>(
+            loc, resultType, data, indicesList);
+        // reshape
+        SmallVector<Value, 1> shapeValues;
+        auto shape = resultType.toBuiltinTensor().getShape();
+        for (size_t i = 0; i < shape.size(); ++i) {
+          shapeValues.push_back(
+              rewriter.create<Torch::ConstantIntOp>(loc, shape[i]));
+        }
+        Value size = rewriter.create<Torch::PrimListConstructOp>(
+            loc, Torch::ListType::get(Torch::IntType::get(data.getContext())),
+            ValueRange{shapeValues});
+        rewriter.replaceOpWithNewOp<Torch::AtenViewOp>(binder.op, resultType,
+                                                       afterIndex, size);
+        return success();
+#endif
       });
   patterns.onOp(
       "GatherElements", 13,
