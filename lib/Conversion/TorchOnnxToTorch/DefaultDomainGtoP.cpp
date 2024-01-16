@@ -265,9 +265,10 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
 		  for (uint64_t i = 1; i < operands.size(); i++) {
 		    result = rewriter.create<Torch::AtenMaximumOp>(
 		               binder.getLoc(), resultType, result, operands[i]);
-                  }
-                  rewriter.replaceOp(binder.op, result.getDefiningOp());
-                  return success();
+		  }
+		  rewriter.replaceOp(
+                    binder.op, result.getDefiningOp());
+		  return success();
                 });
   patterns.onOp("Min", 1,
                 [](OpBinder binder, ConversionPatternRewriter &rewriter) {

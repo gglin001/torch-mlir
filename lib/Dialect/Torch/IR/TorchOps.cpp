@@ -2744,7 +2744,7 @@ OpFoldResult AtenIntTensorOp::fold(FoldAdaptor adaptor) {
   // aten.Int.Tensor, fold to the scalar number.
   if (auto numToTensorScalar = getA().getDefiningOp<PrimNumToTensorScalarOp>())
     return numToTensorScalar.getA();
-  if (auto tensorIntOp = getA().getDefiningOp<AtenTensorIntOp>())
+  if (auto tensorIntOp = getA().getDefiningOp<AtenTensorIntOp>()) 
     return tensorIntOp.getT();
   return nullptr;
 }
