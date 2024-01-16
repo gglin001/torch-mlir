@@ -37,3 +37,4 @@ llvm-build/
 compile_commands.json
 
 .DS_Store
+build_*/

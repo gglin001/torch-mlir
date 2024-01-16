@@ -9,7 +9,7 @@ pushd ..
 git clone https://github.com/llvm/llvm-project.git
 popd
 
-TAG="6b65d79fbb4682468333cea42b62f15c2dffd8f3"
+TAG="0cb024b357aff294b1ba0f9d3de8f48ab684962b"
 mkdir llvm-project-$TAG
 pushd llvm-project-$TAG
 git init
