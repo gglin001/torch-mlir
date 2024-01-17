@@ -28,6 +28,8 @@ it must abide by several rules above and beyond the rest of the codebase:
 
 try:
     import onnx
+    import onnx.numpy_helper
+    import onnx.helper
 except ModuleNotFoundError as e:
     raise ModuleNotFoundError(
         "The onnx package (`pip install onnx`) is required to use the onnx importer"
@@ -36,6 +38,8 @@ except ModuleNotFoundError as e:
 from typing import Optional
 
 from dataclasses import dataclass
+from functools import reduce
+import operator
 
 import numpy as np
 import re
@@ -473,6 +477,12 @@ class ContextCache:
     def tensor_proto_to_attr(self, tp: onnx.TensorProto) -> Attribute:
         tensor_type = self.tensor_proto_to_builtin_type(tp)
         if tp.HasField("raw_data"):
+            # for small constants, cvt to dense attr
+            if reduce(operator.mul, tp.dims, 1) < 10:                
+                return DenseElementsAttr.get(
+                    onnx.numpy_helper.to_array(tp).reshape(tp.dims), signless=False
+                )
+
             # Conveniently, DenseResourceElementsAttr shares the raw data
             # format. We just give it maximum numeric alignment.
             return DenseResourceElementsAttr.get_from_buffer(

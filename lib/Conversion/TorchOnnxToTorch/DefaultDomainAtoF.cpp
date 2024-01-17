@@ -326,6 +326,8 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
             cstStrides);
         Value cstCeilMode =
             rewriter.create<Torch::ConstantBoolOp>(binder.getLoc(), ceilMode);
+        // TODO: temp for test, but not worked
+        countIncludePad = true;
         Value cstCountIncludePad = rewriter.create<Torch::ConstantBoolOp>(
             binder.getLoc(), countIncludePad);
         Value cstNone = rewriter.create<Torch::ConstantNoneOp>(binder.getLoc());

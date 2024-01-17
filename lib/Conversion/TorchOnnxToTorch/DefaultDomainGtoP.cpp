@@ -454,19 +454,23 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             IntegerType::get(data.getContext(), 64, IntegerType::Signed);
         // int64_t intValue = 0;
         auto ValueTensoAttr = DenseElementsAttr::get(
-            RankedTensorType::get({0}, si64Type), {APInt::getZero(64)});
-        auto ValueTensorLiteralType =
-            Torch::ValueTensorType::get(data.getContext(), {0}, si64Type);
+            RankedTensorType::get({1}, si64Type), {APInt::getZero(64)});
+        // auto ValueTensorLiteralType =
+        //     Torch::ValueTensorType::get(data.getContext(), {1}, si64Type);
         Value ValueTensorLiteral = rewriter.create<Torch::ValueTensorLiteralOp>(
-            loc, ValueTensorLiteralType, ValueTensoAttr);
+            loc, ValueTensoAttr);
         // index
         Value indicesList = rewriter.create<Torch::PrimListConstructOp>(
             loc,
             Torch::ListType::get(
-                Torch::OptionalType::get(ValueTensorLiteralType)),
+                Torch::OptionalType::get(ValueTensorLiteral.getType())),
             ValueRange{ValueTensorLiteral});
+        SmallVector<int64_t> afterIndexShape(dataShape);
+        afterIndexShape[0] = 1;
+        // auto afterIndexType = resultType.toBuiltinTensor().cloneWith(ArrayRef<int64_t>{afterIndexShape}, resultType.getDtype());
+        auto afterIndexType = Torch::ValueTensorType::get(data.getContext(), afterIndexShape, resultType.getDtype());
         Value afterIndex = rewriter.create<Torch::AtenIndexTensorOp>(
-            loc, resultType, data, indicesList);
+            loc, afterIndexType, data, indicesList);
         // reshape
         SmallVector<Value, 1> shapeValues;
         auto shape = resultType.toBuiltinTensor().getShape();
