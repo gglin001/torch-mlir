@@ -1260,9 +1260,9 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
         (void)(select);
 
         auto get_si64 = [&](Attribute &attr, size_t i) {
-          if (auto dense_resource =
+          if (auto denseRes =
                   attr.dyn_cast<DenseI64ResourceElementsAttr>()) {
-            return dense_resource.tryGetAsArrayRef()->data()[i];
+            return denseRes.tryGetAsArrayRef()->data()[i];
           } else if (auto dense = attr.dyn_cast<DenseIntElementsAttr>()) {
             return dense.getValues<int64_t>()[i];
           } else {
@@ -1401,21 +1401,21 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
             dimList.push_back(finalDim);
           }
 #else
+          auto get_si64 = [&](Attribute &attr, size_t i) {
+            if (auto denseRes = attr.dyn_cast<DenseI64ResourceElementsAttr>()) {
+              return denseRes.tryGetAsArrayRef()->data()[i];
+            } else if (auto dense = attr.dyn_cast<DenseIntElementsAttr>()) {
+              return dense.getValues<int64_t>()[i];
+            } else {
+              assert(0);
+            }
+          };
+
           for (int i = 0; i < shapeSizes[0]; i++) {
             auto literal =
                 dyn_cast<Torch::ValueTensorLiteralOp>(shape.getDefiningOp());
-            int64_t dim_v;
-            if (auto dense_resource =
-                    literal.getValueAttr()
-                        .dyn_cast<DenseI64ResourceElementsAttr>()) {
-              dim_v = dense_resource.tryGetAsArrayRef()->data()[i];
-            } else if (auto dense_resource =
-                           literal.getValueAttr()
-                               .dyn_cast<DenseIntElementsAttr>()) {
-              dim_v = dense_resource.getValues<int64_t>()[i];
-            } else {
-              return failure();
-            }
+            Attribute attr = literal.getValueAttr();
+            int64_t dim_v = get_si64(attr, i);
             Value dim = rewriter.create<Torch::ConstantIntOp>(
                 binder.getLoc(), rewriter.getType<Torch::IntType>(),
                 rewriter.getIntegerAttr(rewriter.getIntegerType(64), dim_v));

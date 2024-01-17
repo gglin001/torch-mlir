@@ -449,28 +449,29 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             binder.op, resultType, expandedGather, resultSizeList);
         return success();
 #else
-        // TensorLiteral
         auto si64Type =
             IntegerType::get(data.getContext(), 64, IntegerType::Signed);
-        // int64_t intValue = 0;
-        auto ValueTensoAttr = DenseElementsAttr::get(
-            RankedTensorType::get({1}, si64Type), {APInt::getZero(64)});
-        // auto ValueTensorLiteralType =
-        //     Torch::ValueTensorType::get(data.getContext(), {1}, si64Type);
-        Value ValueTensorLiteral = rewriter.create<Torch::ValueTensorLiteralOp>(
-            loc, ValueTensoAttr);
+        // NOTE: only works for axis==0 and indices==0 for now
         // index
+        int64_t intValue = 0;
+        auto ValueTensoAttr = DenseElementsAttr::get(
+            RankedTensorType::get(ArrayRef<int64_t>{intValue}, si64Type),
+            {APInt::getZero(64)});
+        Value ValueTensorLiteral =
+            rewriter.create<Torch::ValueTensorLiteralOp>(loc, ValueTensoAttr);
         Value indicesList = rewriter.create<Torch::PrimListConstructOp>(
             loc,
             Torch::ListType::get(
                 Torch::OptionalType::get(ValueTensorLiteral.getType())),
             ValueRange{ValueTensorLiteral});
         SmallVector<int64_t> afterIndexShape(dataShape);
+        // NOTE: only works for axis==0 and indices==0 for now
         afterIndexShape[0] = 1;
-        // auto afterIndexType = resultType.toBuiltinTensor().cloneWith(ArrayRef<int64_t>{afterIndexShape}, resultType.getDtype());
-        auto afterIndexType = Torch::ValueTensorType::get(data.getContext(), afterIndexShape, resultType.getDtype());
         Value afterIndex = rewriter.create<Torch::AtenIndexTensorOp>(
-            loc, afterIndexType, data, indicesList);
+            loc,
+            Torch::ValueTensorType::get(data.getContext(), afterIndexShape,
+                                        resultType.getDtype()),
+            data, indicesList);
         // reshape
         SmallVector<Value, 1> shapeValues;
         auto shape = resultType.toBuiltinTensor().getShape();
