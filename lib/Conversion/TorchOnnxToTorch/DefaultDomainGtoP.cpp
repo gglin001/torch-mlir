@@ -453,12 +453,11 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             IntegerType::get(data.getContext(), 64, IntegerType::Signed);
         // NOTE: only works for axis==0 and indices==0 for now
         // index
-        int64_t intValue = 0;
-        auto ValueTensoAttr = DenseElementsAttr::get(
-            RankedTensorType::get(ArrayRef<int64_t>{intValue}, si64Type),
+        auto ValueTensorAttr = DenseElementsAttr::get(
+            RankedTensorType::get(ArrayRef<int64_t>{1}, si64Type),
             {APInt::getZero(64)});
         Value ValueTensorLiteral =
-            rewriter.create<Torch::ValueTensorLiteralOp>(loc, ValueTensoAttr);
+            rewriter.create<Torch::ValueTensorLiteralOp>(loc, ValueTensorAttr);
         Value indicesList = rewriter.create<Torch::PrimListConstructOp>(
             loc,
             Torch::ListType::get(
