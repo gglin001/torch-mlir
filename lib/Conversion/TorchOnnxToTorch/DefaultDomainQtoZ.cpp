@@ -1232,7 +1232,7 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
         }
         auto intermediateType = Torch::ValueTensorType::get(
             context, intermediateShape, resultTorchType.getOptionalDtype());
-#if 0
+#if 1
         for (int i = 0; i < numAxes; ++i) {
 
           Value k = rewriter.create<Torch::ConstantIntOp>(
@@ -1363,7 +1363,7 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
             binder.getLoc(), rewriter.getType<Torch::IntType>(),
             rewriter.getIntegerAttr(rewriter.getIntegerType(64), 0));
         if (allowzero == 0) {
-#if 0
+#if 1
           // convert shape (tensor) into torch int list while dealing with zero
           // vals
           for (int i = 0; i < shapeSizes[0]; i++) {

@@ -31,3 +31,5 @@ torch-mlir-opt \
     --convert-torch-onnx-to-torch \
     -o demos/torch.test.onnx.mlir \
     demos/test.onnx.mlir
+
+# git submodule add https://github.com/llvm/llvm-project.git externals/llvm-project

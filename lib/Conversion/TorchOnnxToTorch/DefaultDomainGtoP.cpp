@@ -360,7 +360,7 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
           }
           indexElemCount *= dim;
         }
-#if 0
+#if 1
         // We collapse indices into a (`indexElemCount`,) unary tensor,
         // materialize all the non-axis dimension wrt data shape.
         SmallVector<int64_t> collapsedIndexShape(dataRank, 1);
