@@ -3,16 +3,20 @@
     // export PATH=$PATH:${EXT_PATH}
     // export PYTHONPATH=$PYTHONPATH:${EXT_PYTHONPATH}
     "terminal.integrated.env.linux": {
-        "EXT_PATH": "${workspaceFolder}/build/install/bin",
+        "EXT_PATH": "${workspaceFolder}/build/bin",
         "EXT_PYTHONPATH": "${workspaceFolder}/build/tools/torch-mlir/python_packages/torch_mlir",
     },
     "terminal.integrated.env.osx": {
-        "EXT_PATH": "${workspaceFolder}/build/install/bin",
+        "EXT_PATH": "${workspaceFolder}/build/bin",
         "EXT_PYTHONPATH": "${workspaceFolder}/build/tools/torch-mlir/python_packages/torch_mlir",
     },
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/build/tools/torch-mlir/python_packages/torch_mlir",
+    ],
     "cmake.configureArgs": [
         "-DLLVM_EXTERNAL_PROJECTS=torch-mlir;torch-mlir-dialects",
-        "-DLLVM_ENABLE_PROJECTS=llvm;mlir"
+        // "-DLLVM_ENABLE_PROJECTS=llvm;mlir"
+        "-DLLVM_ENABLE_PROJECTS=mlir"
     ],
     "cmake.configureSettings": {
         "CMAKE_INSTALL_PREFIX": "${workspaceFolder}/build/install",
@@ -24,9 +28,16 @@
         "TORCH_MLIR_ENABLE_JIT_IR_IMPORTER": "ON",
         // "CMAKE_CXX_FLAGS": "-fuse-ld=lld",
         "TORCH_MLIR_ENABLE_LTC": "OFF",
+        // "TORCH_MLIR_ENABLE_ONNX_C_IMPORTER": "ON",
         // for macos
         "LLVM_ENABLE_ZSTD": "OFF",
         "LLVM_ENABLE_TERMINFO": "OFF",
+        // misc
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
     },
     "cmake.sourceDirectory": "${workspaceFolder}/externals/llvm-project/llvm",
+    "editor.wordWrap": "off",
+    "files.trimTrailingWhitespace": false,
+    "files.insertFinalNewline": false,
 }
