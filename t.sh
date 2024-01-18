@@ -16,13 +16,13 @@ git init
 git remote add origin ../../llvm-project
 git fetch --depth 1 origin $TAG
 git checkout FETCH_HEAD
-git remote set-url origin https://github.com/shark-infra/llvm-project.git
+git remote set-url origin https://github.com/llvm/llvm-project.git
 popd
 
 # replace with local repo
 rm -rf $PWD/externals/llvm-project
 ln -sf $PWD/llvm-project-$TAG $PWD/externals/llvm-project
-git add externals/llvm-project
+# git add externals/llvm-project
 
 torch-mlir-opt --help >demos/torch-mlir-opt.help.log
 
