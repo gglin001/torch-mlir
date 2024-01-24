@@ -101,8 +101,7 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
                   rewriter.replaceOpWithNewOp<Torch::AtenLtTensorOp>(
                       binder.op, resultType, lhs, rhs);
                   return success();
-                });
-  
+                }); 
   patterns.onOp("LessOrEqual", 1,
                 [](OpBinder binder, ConversionPatternRewriter &rewriter) {
                   Torch::ValueTensorType resultType;
@@ -150,6 +149,18 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
 		    binder.op, resultType, lhs, rhs);
 		  return success();
 		});
+  patterns.onOp("NonZero", 13,
+    [](OpBinder binder, ConversionPatternRewriter &rewriter) {
+      Torch::ValueTensorType resultType;
+                  Value operand;
+                  if (binder.tensorOperand(operand) ||
+                      binder.tensorResultType(resultType)) {
+                    return failure();
+                  }
+                  rewriter.replaceOpWithNewOp<Torch::AtenNonzeroOp>(
+                      binder.op, resultType, operand);
+                  return success();
+                });
   patterns.onOp(
       "MaxPool", 12, [](OpBinder binder, ConversionPatternRewriter &rewriter) {
         std::string autoPad;
@@ -191,9 +202,10 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
               binder.op, "kernel list size does not match the number of axes");
         if (binder.s64IntegerArrayAttr(padding, "pads", {0}))
           return rewriter.notifyMatchFailure(binder.op, "pads bind failure");
-        if (padding.size() != 1 && padding.size() != rank - 2)
+        if (padding.size() != 1 && padding.size() != 2 * (rank - 2))
           return rewriter.notifyMatchFailure(
-              binder.op, "padding list size does not match the number of axes");
+              binder.op, "padding list must contain (begin,end) pair for each "
+                         "spatial axis");
         if (binder.s64IntegerArrayAttr(strides, "strides", {1}))
           return rewriter.notifyMatchFailure(binder.op, "strides bind failure");
         if (strides.size() != 1 && strides.size() != rank - 2)
@@ -265,10 +277,9 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
 		  for (uint64_t i = 1; i < operands.size(); i++) {
 		    result = rewriter.create<Torch::AtenMaximumOp>(
 		               binder.getLoc(), resultType, result, operands[i]);
-		  }
-		  rewriter.replaceOp(
-                    binder.op, result.getDefiningOp());
-		  return success();
+                  }
+                  rewriter.replaceOp(binder.op, result.getDefiningOp());
+                  return success();
                 });
   patterns.onOp("Min", 1,
                 [](OpBinder binder, ConversionPatternRewriter &rewriter) {
@@ -335,7 +346,8 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             binder.s64IntegerAttr(axis, "axis", 0))
           return failure();
         Location loc = binder.getLoc();
-        // Get data shape and rank.
+
+        // 1. Get data shape and rank.
         auto dataTensorType = data.getType().cast<Torch::ValueTensorType>();
         if (!dataTensorType || !dataTensorType.hasSizes()) {
           return rewriter.notifyMatchFailure(binder.op,
@@ -344,7 +356,7 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
         ArrayRef<int64_t> dataShape = dataTensorType.getSizes();
         unsigned dataRank = dataShape.size();
 
-        // Compute total elements in the indices tensor.
+        // 2. Get indices shape and rank.
         auto indexType = indices.getType().cast<Torch::ValueTensorType>();
         if (!indexType || !indexType.hasSizes()) {
           return rewriter.notifyMatchFailure(binder.op,
@@ -352,49 +364,76 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
         }
         ArrayRef<int64_t> indexShape = indexType.getSizes();
         unsigned indexRank = indexShape.size();
+
+        // 3. Compute total elements in the indices tensor, as we will collapse
+        // the indices tensor to a unary tensor. Also compute index shape and
+        // data shape tensors as they will be used for creating output types.
         int64_t indexElemCount = 1;
         for (int64_t dim : indexShape) {
-          if (dim == -1) {
+          if (dim == Torch::kUnknownSize) {
             indexElemCount = Torch::kUnknownSize;
             break;
           }
           indexElemCount *= dim;
         }
-#if 1
-        // We collapse indices into a (`indexElemCount`,) unary tensor,
-        // materialize all the non-axis dimension wrt data shape.
-        SmallVector<int64_t> collapsedIndexShape(dataRank, 1);
-        collapsedIndexShape[axis] = Torch::kUnknownSize;
-        if (indexElemCount != -1)
-          collapsedIndexShape[axis] = indexElemCount;
 
         Value constOne = rewriter.create<Torch::ConstantIntOp>(
             loc, rewriter.getI64IntegerAttr(1));
         SmallVector<Value> indexShapeTensor;
-        Value prod = constOne;
+        Value indexElemCountVal = constOne;
         for (unsigned i = 0; i < indexRank; ++i) {
           Value indexDimVal = rewriter.create<Torch::AtenSizeIntOp>(
               loc, indices,
               rewriter.create<Torch::ConstantIntOp>(
                   loc, rewriter.getI64IntegerAttr(i)));
           indexShapeTensor.emplace_back(indexDimVal);
-          prod = rewriter.create<Torch::AtenMulIntOp>(loc, prod, indexDimVal);
+          indexElemCountVal = rewriter.create<Torch::AtenMulIntOp>(
+              loc, indexElemCountVal, indexDimVal);
         }
 
-        SmallVector<Value> collapsedIndexSize(dataRank, constOne);
-        collapsedIndexSize[axis] = prod;
-        auto collapsedIndexSizeList =
-            rewriter.create<Torch::PrimListConstructOp>(
-                loc,
-                Torch::ListType::get(Torch::IntType::get(indices.getContext())),
-                collapsedIndexSize);
+        SmallVector<Value> dataShapeTensor;
+        for (unsigned i = 0; i < dataRank; ++i) {
+          dataShapeTensor.emplace_back(rewriter.create<Torch::AtenSizeIntOp>(
+              loc, data,
+              rewriter.create<Torch::ConstantIntOp>(
+                  loc, rewriter.getI64IntegerAttr(i))));
+        }
 
+        // 4. We can not directly perform torch.gather as the onnx.gather op
+        // collects the input data at different location of output compared to
+        // torch.gather op. The output of torch.gather and onnx.gather ops are
+        // indexed differently.
+        // check https://onnx.ai/onnx/operators/onnx__Gather.html for more
+        // details. So we will collapse indices tensor to a unary tensor and
+        // materialize to non-axis dimension of data tensor. For example,
+        // assuming indices is of shape (4, 5, 6), data is (8, 10, 11, 12) and
+        // axis=1. we will collapse indices into a (120,) unary tensor,
+        // materialize to non-axis dimension of data i.e. reshaping the unary
+        // indices tensor to (1, 120, 1, 1) and then perform the torch.gather
+        // operation. Now broadcast the output of gather operation to non-axis
+        // dimensions of data tensor. This would make the result of shape (8,
+        // 10, 120, 12). Post the broadcasting, expand the indices dimensions by
+        // reshaping (8, 10, 120, 12) to (8, 10, 4, 5, 6, 12) tensor, which is
+        // our expected final result.
+        SmallVector<int64_t> collapsedIndexShape(dataRank, 1);
+        collapsedIndexShape[axis] = indexElemCount;
         Type collapsedIndexType = Torch::ValueTensorType::get(
             indexType.getContext(), llvm::ArrayRef(collapsedIndexShape),
             indexType.getOptionalDtype());
+
+        SmallVector<Value> collapsedIndexSize(dataRank, constOne);
+        collapsedIndexSize[axis] = indexElemCountVal;
+        auto collapsedIndexSizeList =
+            rewriter.create<Torch::PrimListConstructOp>(
+                loc,
+                rewriter.getType<Torch::ListType>(
+                    rewriter.getType<Torch::IntType>()),
+                collapsedIndexSize);
+
         auto collapsedIndices = rewriter.create<Torch::AtenViewOp>(
             loc, collapsedIndexType, indices, collapsedIndexSizeList);
 
+        // 5. Compute gather result type and perform gather operation.
         Type gatherResultType = Torch::ValueTensorType::get(
             dataTensorType.getContext(), llvm::ArrayRef(collapsedIndexShape),
             dataTensorType.getOptionalDtype());
@@ -408,21 +447,14 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             loc, gatherResultType, data, constAxis, collapsedIndices,
             /*sparseGrad=*/constFalse);
 
+        // 6. Broadcast the gather output to non-axis dimensions of data tensor.
         SmallVector<int64_t> dataShapeVector(dataShape);
-        dataShapeVector[axis] = Torch::kUnknownSize;
-        if (indexElemCount != -1)
-          dataShapeVector[axis] = indexElemCount;
+        dataShapeVector[axis] = indexElemCount;
         Type expandResultType = Torch::ValueTensorType::get(
             dataTensorType.getContext(), llvm::ArrayRef(dataShapeVector),
             dataTensorType.getOptionalDtype());
-        SmallVector<Value> dataShapeTensor;
-        for (unsigned i = 0; i < dataRank; ++i) {
-          dataShapeTensor.emplace_back(rewriter.create<Torch::AtenSizeIntOp>(
-              loc, data,
-              rewriter.create<Torch::ConstantIntOp>(
-                  loc, rewriter.getI64IntegerAttr(i))));
-        }
-        dataShapeTensor[axis] = prod;
+
+        dataShapeTensor[axis] = indexElemCountVal;
         auto expandSizeList = rewriter.create<Torch::PrimListConstructOp>(
             loc, Torch::ListType::get(Torch::IntType::get(data.getContext())),
             dataShapeTensor);
@@ -430,7 +462,10 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             loc, expandResultType, gatherOp, expandSizeList,
             /*implicit=*/constFalse);
 
-        // Create result size list for the aten.view op.
+        // 7. Compute the result type of reshape op which expands the collapsed
+        // indices shapes back to the original indices shapes and reshape the
+        // output produced at step 6. This will produce our expected result of
+        // onnx.gather op.
         SmallVector<Value> resultShapeTensor;
         for (unsigned i = 0; i < dataRank; ++i) {
           if (i == axis) {
@@ -448,43 +483,6 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
         rewriter.replaceOpWithNewOp<Torch::AtenViewOp>(
             binder.op, resultType, expandedGather, resultSizeList);
         return success();
-#else
-        auto si64Type =
-            IntegerType::get(data.getContext(), 64, IntegerType::Signed);
-        // NOTE: only works for axis==0 and indices==0 for now
-        // index
-        auto ValueTensorAttr = DenseElementsAttr::get(
-            RankedTensorType::get(ArrayRef<int64_t>{1}, si64Type),
-            {APInt::getZero(64)});
-        Value ValueTensorLiteral =
-            rewriter.create<Torch::ValueTensorLiteralOp>(loc, ValueTensorAttr);
-        Value indicesList = rewriter.create<Torch::PrimListConstructOp>(
-            loc,
-            Torch::ListType::get(
-                Torch::OptionalType::get(ValueTensorLiteral.getType())),
-            ValueRange{ValueTensorLiteral});
-        SmallVector<int64_t> afterIndexShape(dataShape);
-        // NOTE: only works for axis==0 and indices==0 for now
-        afterIndexShape[0] = 1;
-        Value afterIndex = rewriter.create<Torch::AtenIndexTensorOp>(
-            loc,
-            Torch::ValueTensorType::get(data.getContext(), afterIndexShape,
-                                        resultType.getDtype()),
-            data, indicesList);
-        // reshape
-        SmallVector<Value, 1> shapeValues;
-        auto shape = resultType.toBuiltinTensor().getShape();
-        for (size_t i = 0; i < shape.size(); ++i) {
-          shapeValues.push_back(
-              rewriter.create<Torch::ConstantIntOp>(loc, shape[i]));
-        }
-        Value size = rewriter.create<Torch::PrimListConstructOp>(
-            loc, Torch::ListType::get(Torch::IntType::get(data.getContext())),
-            ValueRange{shapeValues});
-        rewriter.replaceOpWithNewOp<Torch::AtenViewOp>(binder.op, resultType,
-                                                       afterIndex, size);
-        return success();
-#endif
       });
   patterns.onOp(
       "GatherElements", 13,
