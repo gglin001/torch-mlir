@@ -34,6 +34,7 @@
         // "CMAKE_CXX_FLAGS": "-fuse-ld=lld",
         "TORCH_MLIR_ENABLE_LTC": "OFF",
         // "TORCH_MLIR_ENABLE_ONNX_C_IMPORTER": "ON",
+        "TORCH_MLIR_ENABLE_ONNX_C_IMPORTER": "OFF",
         // for macos
         "LLVM_ENABLE_ZSTD": "OFF",
         "LLVM_ENABLE_TERMINFO": "OFF",
@@ -42,7 +43,8 @@
         "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
     },
     "cmake.sourceDirectory": "${workspaceFolder}/externals/llvm-project/llvm",
-    "editor.wordWrap": "off",
-    "files.trimTrailingWhitespace": false,
-    "files.insertFinalNewline": false,
+    // "files.trimTrailingWhitespace": false,
+    // "files.insertFinalNewline": false,
+    // use abs path
+    "mlir.server_path": "/Users/allen/repos/torch-mlir/build/bin/torch-mlir-lsp-server",
 }
