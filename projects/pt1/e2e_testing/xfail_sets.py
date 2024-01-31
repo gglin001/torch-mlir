@@ -313,8 +313,11 @@ TORCHDYNAMO_XFAIL_SET = {
     "GroupNormNoWeightAndBiasModule_basic",
 
     # Dynamo does not support tracing quantized tensors
+    "ElementwiseDequantizePerChannelModule_basic",
     "ElementwiseDequantizePerTensorModule_basic",
     "ElementwiseQuantizePerTensorModule_basic",
+    "AtenMmQuint8_basic",
+    "Conv2dQInt8Module_basic",
 
     # Dynamo not supporting conv_tbc
     "ConvTbcModule_basic",
@@ -1018,6 +1021,7 @@ TOSA_PASS_SET = {
     "BroadcastZeroRankInputStaticModule_basic",
     "BucketizeTensorStaticFloatModule_basic",
     "BucketizeTensorStaticModule_basic",
+    "CloneModule_basic",
     "ChunkListUnpackUneven_Module_basic",
     "ChunkListUnpack_Module_basic",
     "ConstantBoolParameterModule_basic",
@@ -1539,7 +1543,5 @@ LTC_XFAIL_SET = {
     "ElementwiseBitwiseAndScalarInt64Module_basic",
     "ElementwiseBitwiseAndScalarInt32Module_basic",
     "ElementwiseBitwiseAndScalarInt8Module_basic",
-    "ElementwiseNanToNumModule_Basic",
-    "ElementwiseQuantizePerTensorModule_basic",
-    "ElementwiseDequantizePerTensorModule_basic"
+    "Conv2dQInt8Module_basic",
 }

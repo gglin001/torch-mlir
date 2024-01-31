@@ -251,6 +251,9 @@ def aten〇clamp_max〡shape(self: List[int], max: float) -> List[int]:
 def aten〇rsub〇Scalar〡shape(self: List[int], other: float, alpha: float = 1) -> List[int]:
     return upstream_shape_functions.unary(self)
 
+def aten〇quantize_per_channel〡shape(self: List[int], scales: List[int], zero_points: List[int], axis: int, dtype: int) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
 def aten〇quantize_per_tensor〡shape(self: List[int], scale: float, zero_point: int, dtype: int) -> List[int]:
     return upstream_shape_functions.unary(self)
 
@@ -261,6 +264,9 @@ def aten〇dequantize〇tensor〡shape(qtensor: List[int]) -> List[int]:
     return upstream_shape_functions.unary(qtensor)
 
 def aten〇int_repr〡shape(self: List[int]) -> List[int]:
+    return upstream_shape_functions.unary(self)
+
+def aten〇_make_per_channel_quantized_tensor〡shape(self: List[int], scale: List[int], zero_point: List[int], axis: int) -> List[int]:
     return upstream_shape_functions.unary(self)
 
 def aten〇_make_per_tensor_quantized_tensor〡shape(self: List[int], scale: float, zero_point: int) -> List[int]:
@@ -901,6 +907,24 @@ def aten〇avg_pool2d〡shape(self: List[int], kernel_size: List[int], stride: L
 
 def aten〇adaptive_avg_pool2d〡shape(self: List[int], output_size: List[int]) -> List[int]:
     return upstream_shape_functions.adaptive_avg_pool2d(self, output_size)
+
+def adaptive_max_pool2d(self: List[int], out: List[int]):
+    assert len(out) == 2
+    assert len(self) == 3 or len(self) == 4
+
+    for i in range(len(self)):
+        assert self[i] != 0
+
+    shape: List[int] = []
+    for i in range(len(self) - 2):
+        shape.append(self[i])
+    for j in range(len(out)):
+        shape.append(out[j])
+
+    return shape, shape
+
+def aten〇adaptive_max_pool2d〡shape(self: List[int], output_size: List[int]) -> Tuple[List[int], List[int]]:
+    return adaptive_max_pool2d(self, output_size)
 
 def aten〇flatten〇using_ints〡shape(self: List[int], start_dim: int = 0, end_dim: int = -1) -> List[int]:
     return upstream_shape_functions.flatten(self, start_dim, end_dim)
@@ -2331,6 +2355,11 @@ def aten〇max_pool3d〡dtype(self_rank_dtype: Tuple[int, int], kernel_size: Lis
 
 @check_dtype_function(_check_tensors_with_the_same_dtype(tensor_shapes=[(2, 3, 5, 7)], kernel_size=[2, 2]))
 def aten〇max_pool2d_with_indices〡dtype(self_rank_dtype: Tuple[int, int], kernel_size: List[int], stride: List[int] = (), padding: List[int] = (0, 0,), dilation: List[int] = (1, 1,), ceil_mode: bool = False) -> Tuple[int, int]:
+    self_rank, self_dtype = self_rank_dtype
+    return self_dtype, torch.int64
+
+@check_dtype_function(_check_tensors_with_the_same_dtype(tensor_shapes=[(2, 3, 5, 7)], output_size=[2, 2]))
+def aten〇adaptive_max_pool2d〡dtype(self_rank_dtype: Tuple[int, int], output_size: List[int]) -> Tuple[int, int]:
     self_rank, self_dtype = self_rank_dtype
     return self_dtype, torch.int64
 
@@ -4257,6 +4286,9 @@ def prims〇collapse〡dtype(a_rank_dtype: Tuple[int, int], start: int, end: int
     return a_dtype
 
 
+def aten〇quantize_per_channel〡dtype(self_rank_dtype: Tuple[int, int], scales_rank_dtype: Tuple[int, int], zero_points_rank_dtype: Tuple[int, int], axis: int, dtype: int) -> int:
+    return dtype
+
 def aten〇quantize_per_tensor〡dtype(self_rank_dtype: Tuple[int, int], scale: float, zero_point: int, dtype: int) -> int:
     return dtype
 
@@ -4273,6 +4305,14 @@ def aten〇int_repr〡dtype(self_rank_dtype: Tuple[int, int]) -> int:
     if (self_dtype == torch.qint8):
         return torch.int8
     return torch.int32
+
+def aten〇_make_per_channel_quantized_tensor〡dtype(self_rank_dtype: Tuple[int, int], scale_rank_dtype: Tuple[int, int], zero_point_rank_dtype: Tuple[int, int], axis: int) -> int:
+    self_rank, self_dtype = self_rank_dtype
+    if (self_dtype == torch.uint8):
+      return torch.quint8
+    if (self_dtype == torch.int8):
+      return torch.qint8
+    return torch.qint32
 
 def aten〇_make_per_tensor_quantized_tensor〡dtype(self_rank_dtype: Tuple[int, int], scale: float, zero_point: int) -> int:
     self_rank, self_dtype = self_rank_dtype
