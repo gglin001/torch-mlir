@@ -128,16 +128,20 @@ static Value buildUnitNormalCdf(OpBuilder &b, Location &loc, Value x) {
 }
 
 template <typename MathOpTy>
-static Value
-createCalculationForMathOpWithDtypeConversion(OpBuilder &b,
-                                              const TypeConverter *converter,
-                                              Value payloadArg, Operation *op) {
-  Type dtype = converter->convertType(op->getResult(0).getType())
-                   .template cast<RankedTensorType>()
-                   .getElementType();
+static Value createFpOpWithDtype(OpBuilder &b, const TypeConverter *converter,
+                                 Value payloadArg, Operation *op) {
+  Type inTTy = cast<ValueTensorType>(op->getOperand(0).getType()).getDtype();
+  Type outTTy = cast<ValueTensorType>(op->getResult(0).getType()).getDtype();
+  Type outTy =
+      cast<RankedTensorType>(converter->convertType(op->getResult(0).getType()))
+          .getElementType();
+  Type computeTy = outTy;
+  if (isa<IntegerType>(computeTy))
+    computeTy = b.getF32Type();
   Location loc = op->getLoc();
-  Value arg = convertScalarToDtype(b, loc, payloadArg, dtype);
-  return b.create<MathOpTy>(loc, arg);
+  Value arg = convertScalarToDtype(b, loc, payloadArg, computeTy, inTTy);
+  auto newOp = b.create<MathOpTy>(loc, arg);
+  return convertScalarToDtype(b, loc, newOp, outTy, std::nullopt, outTTy);
 }
 
 template <typename OpTy>
@@ -216,77 +220,71 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     return b.create<math::FloorOp>(loc, payloadArgs[0]);
   if (isa<AtenCeilOp>(op))
     return b.create<math::CeilOp>(loc, payloadArgs[0]);
-  if (isa<AtenTanOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::TanOp>(
-        b, converter, payloadArgs[0], op);
-  }
-  if (isa<AtenTanhOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::TanhOp>(
-        b, converter, payloadArgs[0], op);
-  }
-  if (isa<AtenSinhOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::SinhOp>(
-        b, converter, payloadArgs[0], op);
-  }
-  if (isa<AtenCoshOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::CoshOp>(
-        b, converter, payloadArgs[0], op);
-  }
   if (isa<AtenExpOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::ExpOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::ExpOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenExpm1Op>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::ExpM1Op>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::ExpM1Op>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenLogOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::LogOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::LogOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenLog2Op>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::Log2Op>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::Log2Op>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenLog10Op>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::Log10Op>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::Log10Op>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenLog1pOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::Log1pOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::Log1pOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenErfOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::ErfOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::ErfOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenSqrtOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::SqrtOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::SqrtOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenRsqrtOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::RsqrtOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::RsqrtOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenNegOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<arith::NegFOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<arith::NegFOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenSinOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::SinOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::SinOp>(b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenSinhOp>(op)) {
+    return createFpOpWithDtype<math::SinhOp>(b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenAsinOp>(op)) {
+    return createFpOpWithDtype<math::AsinOp>(b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenAsinhOp>(op)) {
+    return createFpOpWithDtype<math::AsinhOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenCosOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::CosOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::CosOp>(b, converter, payloadArgs[0], op);
   }
-  if (isa<AtenAtanOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::AtanOp>(
-        b, converter, payloadArgs[0], op);
+  if (isa<AtenCoshOp>(op)) {
+    return createFpOpWithDtype<math::CoshOp>(b, converter, payloadArgs[0], op);
   }
   if (isa<AtenAcosOp>(op)) {
-    return createCalculationForMathOpWithDtypeConversion<math::AcosOp>(
-        b, converter, payloadArgs[0], op);
+    return createFpOpWithDtype<math::AcosOp>(b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenAcoshOp>(op)) {
+    return createFpOpWithDtype<math::AcoshOp>(b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenTanOp>(op)) {
+    return createFpOpWithDtype<math::TanOp>(b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenTanhOp>(op)) {
+    return createFpOpWithDtype<math::TanhOp>(b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenAtanOp>(op)) {
+    return createFpOpWithDtype<math::AtanOp>(b, converter, payloadArgs[0], op);
+  }
+  if (isa<AtenAtanhOp>(op)) {
+    return createFpOpWithDtype<math::AtanhOp>(b, converter, payloadArgs[0], op);
   }
   if (auto clone = dyn_cast<AtenCloneOp>(op)) {
     int64_t memoryFormat;
@@ -424,8 +422,11 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
         b.create<arith::ConstantOp>(loc, b.getFloatAttr(floatDtype, 0));
     return createEqual(b, loc, floatDtype, self, zero);
   }
-  if (isa<AtenAbsOp>(op))
+  if (isa<AtenAbsOp>(op)) {
+    if (payloadArgs[0].getType().isa<IntegerType>())
+      return b.create<math::AbsIOp>(loc, payloadArgs[0]);
     return b.create<math::AbsFOp>(loc, payloadArgs[0]);
+  }
   if (isa<AtenIsinfOp>(op)) {
     Value abs = b.create<math::AbsFOp>(loc, payloadArgs[0]);
     Value infinity = b.create<arith::ConstantOp>(
@@ -434,13 +435,25 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     return createEqual(b, loc, abs.getType(), abs, infinity);
   }
   if (isa<AtenSigmoidOp>(op)) {
-    auto negate = createCalculationForMathOpWithDtypeConversion<arith::NegFOp>(
-        b, converter, payloadArgs[0], op);
+    Type inTTy = cast<ValueTensorType>(op->getOperand(0).getType()).getDtype();
+    Type outTTy = cast<ValueTensorType>(op->getResult(0).getType()).getDtype();
+    Type outTy = cast<RankedTensorType>(
+                     converter->convertType(op->getResult(0).getType()))
+                     .getElementType();
+    Type computeTy = outTy;
+    if (isa<IntegerType>(computeTy))
+      computeTy = b.getF32Type();
+
+    Value arg = payloadArgs[0];
+    arg = convertScalarToDtype(b, loc, payloadArgs[0], computeTy, inTTy);
+    auto negate = b.create<arith::NegFOp>(loc, arg);
     auto one =
         b.create<arith::ConstantOp>(loc, FloatAttr::get(negate.getType(), 1));
     auto exp = b.create<math::ExpOp>(loc, negate);
     auto added = b.create<arith::AddFOp>(loc, exp, one);
-    return b.create<arith::DivFOp>(loc, one, added);
+    auto div = b.create<arith::DivFOp>(loc, one, added);
+    outTy.dump();
+    return convertScalarToDtype(b, loc, div, outTy, std::nullopt, outTTy);
   }
   if (auto relu = dyn_cast<AtenReluOp>(op)) {
     if (!relu.getType()
@@ -567,12 +580,19 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
   }
   if (auto add = dyn_cast<AtenAddTensorOp>(op)) {
     AtenAddTensorOp::Adaptor adaptor(operands);
+    Type resultElementType = add.getType().cast<BaseTensorType>().getDtype();
     Type dtype = converter->convertType(add.getType())
                      .cast<RankedTensorType>()
                      .getElementType();
-    Value lhs = convertScalarToDtype(b, loc, payloadArgs[0], dtype);
-    Value rhs = convertScalarToDtype(b, loc, payloadArgs[1], dtype);
-    Value alpha = convertScalarToDtype(b, loc, adaptor.getAlpha(), dtype);
+    Value lhs = convertScalarToDtype(b, loc, payloadArgs[0], dtype,
+                                     /*srcOriginalDtype=*/std::nullopt,
+                                     /*dstOriginalDtype=*/resultElementType);
+    Value rhs = convertScalarToDtype(b, loc, payloadArgs[1], dtype,
+                                     /*srcOriginalDtype=*/std::nullopt,
+                                     /*dstOriginalDtype=*/resultElementType);
+    Value alpha = convertScalarToDtype(b, loc, adaptor.getAlpha(), dtype,
+                                       /*srcOriginalDtype=*/std::nullopt,
+                                       /*dstOriginalDtype=*/resultElementType);
     if (dtype.isa<mlir::FloatType>()) {
       Value scaled = b.create<arith::MulFOp>(loc, rhs, alpha);
       return b.create<arith::AddFOp>(loc, lhs, scaled);
@@ -610,7 +630,9 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
                      .getElementType();
     Value self = convertScalarToDtype(b, loc, payloadArgs[0], dtype);
     Value other = convertScalarToDtype(b, loc, operands[1], dtype);
-    Value alpha = convertScalarToDtype(b, loc, operands[2], dtype);
+    Value alpha = convertScalarToDtype(
+        b, loc, operands[2], dtype, /*srcOriginalDtype=*/operands[2].getType(),
+        /*dstOriginalDtype=*/dtype);
     if (dtype.isa<mlir::FloatType>()) {
       Value mult = b.create<arith::MulFOp>(loc, other, alpha);
       return b.create<arith::SubFOp>(loc, self, mult);
@@ -1115,7 +1137,9 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
                      .getElementType();
     Value self = convertScalarToDtype(b, loc, payloadArgs[0], dtype);
     Value other = convertScalarToDtype(b, loc, operands[1], dtype);
-    Value alpha = convertScalarToDtype(b, loc, operands[2], dtype);
+    Value alpha = convertScalarToDtype(
+        b, loc, operands[2], dtype, /*srcOriginalDtype=*/operands[2].getType(),
+        /*dstOriginalDtype=*/dtype);
     if (dtype.isa<mlir::FloatType>()) {
       Value mult = b.create<arith::MulFOp>(loc, self, alpha);
       return b.create<arith::SubFOp>(loc, other, mult);
@@ -1496,7 +1520,8 @@ public:
              AtenMaskedFillTensorOp, AtenLogicalOrOp, AtenLogicalAndOp,
              AtenLogicalXorOp, AtenLogicalNotOp, AtenIsinfOp, AtenTriuOp,
              AtenTrilOp, AtenBitwiseNotOp, AtenRoundOp, AtenFillScalarOp,
-             AtenFillTensorOp, AtenAtanOp, AtenAcosOp, AtenRealOp, AtenImagOp,
+             AtenFillTensorOp, AtenAtanOp, AtenAcosOp, AtenAtanhOp, AtenAcoshOp,
+             AtenAsinOp, AtenAsinhOp, AtenRealOp, AtenImagOp,
              AtenDequantizeSelfOp, AtenDequantizeTensorOp,
              AtenQuantizePerTensorOp>(op))
       return rewriter.notifyMatchFailure(op, "not a supported elementwise op");
@@ -2341,27 +2366,27 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
     ConversionTarget &target) {
   MLIRContext *context = patterns.getContext();
   target.addIllegalOp<
-      AtenTanOp, AtenTanhOp, AtenSinhOp, AtenCoshOp, AtenReluOp, AtenGeluOp,
-      AtenGeluBackwardOp, AtenAddTensorOp, AtenMulTensorOp, AtenDivTensorOp,
-      AtenDivTensorModeOp, AtenSubTensorOp, AtenLerpTensorOp, AtenSigmoidOp,
-      AtenMinimumOp, AtenAtan2Op, AtenMaximumOp, AtenToDtypeOp, AtenClampOp,
-      AtenClampTensorOp, AtenRsubScalarOp, AtenLogOp, AtenErfOp, AtenSqrtOp,
-      AtenFloorOp, AtenCeilOp, AtenPreluOp, AtenPowScalarOp,
-      AtenPowTensorScalarOp, AtenPowTensorTensorOp, AtenLog2Op, AtenLog10Op,
-      AtenLog1pOp, AtenRsqrtOp, AtenAbsOp, AtenReciprocalOp,
-      AtenBitwiseAndTensorOp, AtenBitwiseAndScalarOp, AtenBitwiseOrTensorOp,
-      AtenBitwiseXorTensorOp, AtenBitwiseLeftShiftTensorOp,
-      AtenBitwiseRightShiftTensorOp, AtenGtScalarOp, AtenGeScalarOp,
-      AtenEqScalarOp, AtenLtScalarOp, AtenLeScalarOp, AtenWhereSelfOp,
-      AtenGtTensorOp, AtenGeTensorOp, AtenEqTensorOp, AtenNeTensorOp,
-      AtenLtTensorOp, AtenLeTensorOp, AtenThresholdOp, AtenThresholdBackwardOp,
-      AtenHardtanhBackwardOp, AtenCloneOp, AtenSinOp, AtenCosOp, AtenNeScalarOp,
-      AtenMaskedFillTensorOp, AtenLogicalOrOp, AtenLogicalAndOp, AtenAtanOp,
-      AtenAcosOp, AtenLogicalXorOp, AtenLogicalNotOp, AtenIsinfOp, AtenTriuOp,
-      AtenTrilOp, AtenRemainderScalarOp, AtenRemainderTensorOp,
-      AtenBitwiseNotOp, AtenRoundOp, AtenFillScalarOp, AtenFillTensorOp,
-      AtenRealOp, AtenImagOp, AtenDequantizeSelfOp, AtenDequantizeTensorOp,
-      AtenQuantizePerTensorOp>();
+      AtenTanOp, AtenTanhOp, AtenSinhOp, AtenCoshOp, AtenAtanhOp, AtenAcoshOp,
+      AtenAsinOp, AtenAsinhOp, AtenReluOp, AtenGeluOp, AtenGeluBackwardOp,
+      AtenAddTensorOp, AtenMulTensorOp, AtenDivTensorOp, AtenDivTensorModeOp,
+      AtenSubTensorOp, AtenLerpTensorOp, AtenSigmoidOp, AtenMinimumOp,
+      AtenAtan2Op, AtenMaximumOp, AtenToDtypeOp, AtenClampOp, AtenClampTensorOp,
+      AtenRsubScalarOp, AtenLogOp, AtenErfOp, AtenSqrtOp, AtenFloorOp,
+      AtenCeilOp, AtenPreluOp, AtenPowScalarOp, AtenPowTensorScalarOp,
+      AtenPowTensorTensorOp, AtenLog2Op, AtenLog10Op, AtenLog1pOp, AtenRsqrtOp,
+      AtenAbsOp, AtenReciprocalOp, AtenBitwiseAndTensorOp,
+      AtenBitwiseAndScalarOp, AtenBitwiseOrTensorOp, AtenBitwiseXorTensorOp,
+      AtenBitwiseLeftShiftTensorOp, AtenBitwiseRightShiftTensorOp,
+      AtenGtScalarOp, AtenGeScalarOp, AtenEqScalarOp, AtenLtScalarOp,
+      AtenLeScalarOp, AtenWhereSelfOp, AtenGtTensorOp, AtenGeTensorOp,
+      AtenEqTensorOp, AtenNeTensorOp, AtenLtTensorOp, AtenLeTensorOp,
+      AtenThresholdOp, AtenThresholdBackwardOp, AtenHardtanhBackwardOp,
+      AtenCloneOp, AtenSinOp, AtenCosOp, AtenNeScalarOp, AtenMaskedFillTensorOp,
+      AtenLogicalOrOp, AtenLogicalAndOp, AtenAtanOp, AtenAcosOp,
+      AtenLogicalXorOp, AtenLogicalNotOp, AtenIsinfOp, AtenTriuOp, AtenTrilOp,
+      AtenRemainderScalarOp, AtenRemainderTensorOp, AtenBitwiseNotOp,
+      AtenRoundOp, AtenFillScalarOp, AtenFillTensorOp, AtenRealOp, AtenImagOp,
+      AtenDequantizeSelfOp, AtenDequantizeTensorOp, AtenQuantizePerTensorOp>();
   patterns.add<ConvertElementwiseOp>(typeConverter, context);
   target.addIllegalOp<AtenNllLossForwardOp>();
   patterns.add<ConvertAtenDetachOp>(typeConverter, context);

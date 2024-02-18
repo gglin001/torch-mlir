@@ -1447,7 +1447,17 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
           current[i] = i;
         }
 
-        // Convert dynamic shape dimension.
+        for (auto &dim : permutations)
+          dim = dim < 0 ? dim + rank : dim;
+
+        // We need to override to the destination if known:
+        if (resultType.hasSizes()) {
+          for (int i = 0; i < rank; ++i) {
+            shape[permutations[i]] = resultType.getSizes()[i];
+          }
+        }
+
+        // Convert dynamic shape dimension:
         for (unsigned i = 0; i < shape.size(); i++) {
           if (shape[i] == ShapedType::kDynamic)
             shape[i] = Torch::kUnknownSize;
@@ -1531,18 +1541,14 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
             return failure();
           }
         } else {
-          // The default axes value is the range from 0 to the number of
-          // dimensions
+          // The default axes value is the range from 0 to the size of first
+          // dimension of `starts` and `ends`.
           Value none = rewriter.create<Torch::ConstantNoneOp>(loc);
-          auto defaultAxesType = Torch::ValueTensorType::get(
-              context, ArrayRef<int64_t>{operandTy.getRank()},
-              rewriter.getIntegerType(64, /*signed*/ 1));
           Value arangeLength = rewriter.create<Torch::ConstantIntOp>(
               loc, rewriter.getType<Torch::IntType>(),
-              rewriter.getIntegerAttr(rewriter.getIntegerType(64),
-                                      operandTy.getRank()));
+              rewriter.getIntegerAttr(rewriter.getIntegerType(64), startSize));
           axes = rewriter.create<Torch::AtenArangeOp>(
-              loc, defaultAxesType, arangeLength, none, none, none, none);
+              loc, startsTorchTy, arangeLength, none, none, none, none);
         }
 
         // Binding `steps` from its arguments or through a default value
@@ -1553,22 +1559,18 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
           }
         } else {
           // The default `steps` value is a 1d tensor filled with ones with a
-          // size of the dimension of the operand
+          // size equal to the size of `starts` and `ends`.
           Value none = rewriter.create<Torch::ConstantNoneOp>(loc);
-          auto defaultStepsType = Torch::ValueTensorType::get(
-              context, ArrayRef<int64_t>{operandTy.getRank()},
-              rewriter.getIntegerType(64, /*signed*/ 1));
           Value sizeStepInput = rewriter.create<Torch::ConstantIntOp>(
               loc, rewriter.getType<Torch::IntType>(),
-              rewriter.getIntegerAttr(rewriter.getIntegerType(64),
-                                      operandTy.getRank()));
+              rewriter.getIntegerAttr(rewriter.getIntegerType(64), startSize));
           Value sizeStepsInput = rewriter.create<Torch::PrimListConstructOp>(
               loc,
               Torch::ListType::get(
                   Torch::IntType::get(binder.op->getContext())),
               sizeStepInput);
           steps = rewriter.create<Torch::AtenOnesOp>(
-              loc, defaultStepsType, sizeStepsInput, none, none, none, none);
+              loc, startsTorchTy, sizeStepsInput, none, none, none, none);
         }
 
         if (!(endsTy.getRank() == 1 && startsTy.getRank() == 1 &&
@@ -1613,9 +1615,10 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
 
         llvm::SmallVector<int64_t> intermediateShape(operandTy.getShape());
         for (int i = 0, s = operandTy.getRank(); i < s; ++i) {
-          if (operandTy.getDimSize(i) != resultTy.getDimSize(i)) {
+          if (operandTy.getDimSize(i) != resultTy.getDimSize(i))
             intermediateShape[i] = -1;
-          }
+          if (intermediateShape[i] == ShapedType::kDynamic)
+            intermediateShape[i] = Torch::kUnknownSize;
         }
         auto intermediateType = Torch::ValueTensorType::get(
             context, intermediateShape, resultTorchType.getOptionalDtype());
@@ -1656,6 +1659,29 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
             binder.tensorResultType(resultType) ||
             binder.s64IntegerAttr(allowzero, "allowzero", 0))
           return failure();
+
+        // If the result shape is static then we can create a result shape list
+        // directly using the result shape values (integers).
+        if (resultType.hasSizes()) {
+          bool hasStaticShape = resultType.areAllSizesKnown();
+          ArrayRef<int64_t> resultShapeInt = resultType.getSizes();
+          if (hasStaticShape) {
+            SmallVector<Value> resultShape;
+            for (int64_t dim : resultShapeInt) {
+              resultShape.push_back(rewriter.create<Torch::ConstantIntOp>(
+                  binder.getLoc(), rewriter.getI64IntegerAttr(dim)));
+            }
+            Value resultShapeList = rewriter.create<Torch::PrimListConstructOp>(
+                binder.getLoc(),
+                Torch::ListType::get(
+                    Torch::IntType::get(binder.op->getContext())),
+                resultShape);
+            rewriter.replaceOpWithNewOp<Torch::AtenReshapeOp>(
+                binder.op, resultType, data, resultShapeList);
+            return success();
+          }
+        }
+
         Torch::BaseTensorType shapeType =
             shape.getType().cast<Torch::BaseTensorType>();
         SmallVector<Value> dimList;
