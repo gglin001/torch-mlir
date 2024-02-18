@@ -12,14 +12,15 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": true,
         "CMAKE_C_COMPILER": "/usr/bin/clang",
         "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
-        "LLVM_TARGETS_TO_BUILD": "host",
-        "MLIR_ENABLE_BINDINGS_PYTHON": true,
         "CMAKE_EXE_LINKER_FLAGS_INIT": "-fuse-ld=lld",
         "CMAKE_MODULE_LINKER_FLAGS_INIT": "-fuse-ld=lld",
         "CMAKE_SHARED_LINKER_FLAGS_INIT": "-fuse-ld=lld",
         "TORCH_MLIR_OUT_OF_TREE_BUILD": true,
+        "MLIR_ENABLE_BINDINGS_PYTHON": true,
+        "TORCH_MLIR_ENABLE_STABLEHLO": true,
         "TORCH_MLIR_ENABLE_JIT_IR_IMPORTER": true,
-        "TORCH_MLIR_ENABLE_ONNX_C_IMPORTER": false,
+        "TORCH_MLIR_ENABLE_LTC": false,
+        "TORCH_MLIR_ENABLE_ONNX_C_IMPORTER": true,
         "LLVM_DIR": "/iree-llvm-project/build/install/lib/cmake/llvm",
         "MLIR_DIR": "/iree-llvm-project/build/install/lib/cmake/mlir"
       }
