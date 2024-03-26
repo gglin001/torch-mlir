@@ -16,7 +16,18 @@ import operator
 import re
 from dataclasses import dataclass
 from types import BuiltinMethodType, BuiltinFunctionType
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+    TYPE_CHECKING,
+    Union,
+)
 import weakref
 
 import numpy as np
@@ -44,6 +55,16 @@ from torch.fx import (
     GraphModule,
     Node,
 )
+
+try:
+    from torch.export.graph_signature import InputSpec as TypingInputSpec
+except ModuleNotFoundError:
+    # PyTorch prior to 2.3 is missing certain things we use in typing
+    # signatures. Just make them be Any.
+    if not TYPE_CHECKING:
+        TypingInputSpec = Any
+    else:
+        raise
 
 try:
     import ml_dtypes
@@ -199,31 +220,65 @@ PY_BUILTIN_TO_TORCH_OP = {
     "gt": torch.ops.aten.gt,
 }
 
-SYMBOLIC_TORCH_OPS = {
-    torch.ops.aten.sym_size,
-    torch.ops.aten.sym_stride,
-    torch.ops.aten.sym_numel,
-}
+# torch with cuda has a __version__ that looks like  "2.1.0+cu113",
+# so split by + and 0 index will always give the base version
+_IS_TORCH_2_1_OR_EARLIER = torch.__version__.split("+")[0] <= "2.1.0"
 
-SYMBOLIC_OP_TO_TORCH_OP = {
-    (torch.ops.aten.sym_size, 1): torch.ops.aten.size.default,
-    (torch.ops.aten.sym_size, 2): torch.ops.aten.size.int,
-    (torch.ops.aten.sym_stride, 1): torch.ops.aten.stride.default,
-    (torch.ops.aten.sym_stride, 2): torch.ops.aten.stride.int,
-    (torch.ops.aten.sym_numel, 1): torch.ops.aten.numel.default,
-}
+# The following are maps from symbolic ops to their non symbolic equivalents.
+# In <=2.1.0, imported fx graphs come with a type inspecific torch.ops.aten.sym_size
+# We identify it using the number of args in the node, 1 being default, 2 being int
+# In the mapping below (torch.aten.sym_size, 2) indicates len(args)=2 therefore
+# map to torch.aten.size.int.
+# Thankfully, newer versions provide a specific torch.ops.aten.sym_size.<type>.
+# Once we drop support for <2.1.0, we can get rid of the the SYMBOLIC_TORCH_OPS
+# set and just check key existence in SYMBOLIC_OP_TO_TORCH_OP
+
+if _IS_TORCH_2_1_OR_EARLIER:
+    SYMBOLIC_TORCH_OPS = {
+        torch.ops.aten.sym_size,
+        torch.ops.aten.sym_stride,
+        torch.ops.aten.sym_numel,
+    }
+
+    SYMBOLIC_OP_TO_TORCH_OP = {
+        (torch.ops.aten.sym_size, 1): torch.ops.aten.size.default,
+        (torch.ops.aten.sym_size, 2): torch.ops.aten.size.int,
+        (torch.ops.aten.sym_stride, 1): torch.ops.aten.stride.default,
+        (torch.ops.aten.sym_stride, 2): torch.ops.aten.stride.int,
+        (torch.ops.aten.sym_numel, 1): torch.ops.aten.numel.default,
+    }
+else:
+    SYMBOLIC_TORCH_OPS = {
+        torch.ops.aten.sym_size.int,
+        torch.ops.aten.sym_stride.int,
+        torch.ops.aten.sym_numel.default,
+    }
+
+    SYMBOLIC_OP_TO_TORCH_OP = {
+        torch.ops.aten.sym_size.default: torch.ops.aten.size.default,
+        torch.ops.aten.sym_size.int: torch.ops.aten.size.int,
+        torch.ops.aten.sym_stride.default: torch.ops.aten.stride.default,
+        torch.ops.aten.sym_stride.int: torch.ops.aten.stride.int,
+        torch.ops.aten.sym_numel.default: torch.ops.aten.numel.default,
+    }
 
 
 @dataclass(frozen=True)
 class SparsityMeta:
-    """Class for keeping track of sparsity meta data."""
+    """
+    Class for keeping track of sparsity meta data.
+
+    NOTE: this will be fully replaced by
+          torch.fx.passes.shape_prop.SparseTensorMetadata
+    """
 
     layout: torch.layout
     batch_dim: int
     sparse_dim: int
     dense_dim: int
-    pos_width: int
-    crd_width: int
+    blocksize: Optional[Tuple[int, int]]
+    pos_dtype: torch.dtype
+    crd_dtype: torch.dtype
 
 
 def sparsity_encoding(shape: torch.Size, sparsity: SparsityMeta) -> str:
@@ -240,31 +295,47 @@ def sparsity_encoding(shape: torch.Size, sparsity: SparsityMeta) -> str:
     )
     dim = batch_dim + sparse_dim + dense_dim
     assert dim == len(shape)
+    blocksize = sparsity.blocksize
 
-    dims = ",".join(f"d{d}" for d in range(0, dim))
+    dims = ",".join(f"d{d}" for d in range(dim))
 
     if sparsity.layout is torch.sparse_coo:
-        assert sparse_dim == 2  # TODO: deeper sparse dims
-        lvls = f"d{batch_dim}:compressed(nonunique),d{batch_dim+1}:singleton"
+        assert sparse_dim >= 2 and blocksize is None
+        trail_dim = batch_dim + sparse_dim - 1
+        coords = ",".join(
+            f"d{d}:singleton(nonunique,soa)" for d in range(batch_dim + 1, trail_dim)
+        )
+        sep = "," if sparse_dim > 2 else ""
+        lvls = f"d{batch_dim}:compressed(nonunique),{coords}{sep}d{trail_dim}:singleton(soa)"
     elif sparsity.layout is torch.sparse_csr:
-        assert sparse_dim == 2
+        assert sparse_dim == 2 and blocksize is None
         lvls = f"d{batch_dim}:dense,d{batch_dim+1}:compressed"
     elif sparsity.layout is torch.sparse_csc:
-        assert sparse_dim == 2
+        assert sparse_dim == 2 and blocksize is None
         lvls = f"d{batch_dim+1}:dense,d{batch_dim}:compressed"
     else:
-        # TODO: block format (derive block size!)
-        raise RuntimeError(f"Unsupported sparse layout {sparse_layout}")
+        assert sparse_dim == 2 and blocksize is not None
+        if sparsity.layout is torch.sparse_bsr:
+            i, j = batch_dim, batch_dim + 1
+        else:
+            assert sparsity.layout is torch.sparse_bsc
+            j, i = batch_dim, batch_dim + 1
+        m, n = blocksize
+        lvls = (
+            f"d{i} floordiv {m}:dense,d{j} floordiv {n}:compressed,"
+            f"d{i} mod {m}:dense,d{j} mod {n}:dense"
+        )
 
     if batch_dim > 0:
-        batch = ",".join(f"d{d}:dense" for d in range(0, batch_dim))
+        batch = ",".join(f"d{d}:dense" for d in range(batch_dim))
         lvls = f"{batch},{lvls}"
 
     if dense_dim > 0:
         dense = ",".join(f"d{d}:dense" for d in range(batch_dim + sparse_dim, dim))
         lvls = f"{lvls},{dense}"
 
-    posw, crdw = sparsity.pos_width, sparsity.crd_width
+    posw = torch.iinfo(sparsity.pos_dtype).bits
+    crdw = torch.iinfo(sparsity.crd_dtype).bits
     return f"#sparse_tensor.encoding<{{map=({dims})->({lvls}),posWidth={posw},crdWidth={crdw}}}>"
 
 
@@ -277,15 +348,24 @@ def is_builtin_function_or_method(obj: Any) -> bool:
     return isinstance(obj, (BuiltinMethodType, BuiltinFunctionType))
 
 
-@dataclass(frozen=True, slots=True)
+# TODO: switch back to `slots=True` when py3.9 support is dropped
+@dataclass(frozen=True)
 class InputInfo:
     """Provides additional metadata when resolving inputs."""
 
+    __slots__ = [
+        "program",
+        "input_spec",
+        "node",
+        "ir_type",
+        "mutable_producer_node_name",
+    ]
+
     program: torch.export.ExportedProgram
-    input_spec: torch.export.graph_signature.InputSpec
+    input_spec: TypingInputSpec
     node: Node
     ir_type: IrType
-    mutable_producer_node_name: Optional[str] = None
+    mutable_producer_node_name: Optional[str]
 
 
 class FxImporterHooks:
@@ -389,8 +469,12 @@ class FxImporter:
         return self._m.operation
 
     def import_program(
-        self, prog: torch.export.ExportedProgram, *, func_name: str = "main"
-    ):
+        self,
+        prog: torch.export.ExportedProgram,
+        *,
+        func_name: str = "main",
+        func_visibility: Optional[str] = None,
+    ) -> Operation:
         """Imports an ExportedProgram according to our chosen canonical representation.
 
         This mechanism is the fully general solution for handling an ExportedProgram
@@ -414,8 +498,8 @@ class FxImporter:
         default policy is to capture them as frozen values.
         """
         # Create lookaside table of placeholders/outputs.
-        placeholder_nodes: dict[str, Node] = {}
-        all_producer_nodes: dict[str, Node] = {}
+        placeholder_nodes: Dict[str, Node] = {}
+        all_producer_nodes: Dict[str, Node] = {}
         loc: Optional[Location] = None
         for node in prog.graph.nodes:
             if loc is None:
@@ -447,15 +531,15 @@ class FxImporter:
         }
 
         # Additional bindings that we need to set up after the function is created.
-        mutable_buffer_target_producers: dict[str, str] = {}
-        constant_tensors: dict[Node, torch.Tensor] = {}
-        parameter_bindings: dict[Node, tuple[Any, InputInfo]] = {}
-        buffer_bindings: dict[Node, tuple[Any, InputInfo]] = {}
+        mutable_buffer_target_producers: Dict[str, str] = {}
+        constant_tensors: Dict[Node, torch.Tensor] = {}
+        parameter_bindings: Dict[Node, Tuple[Any, InputInfo]] = {}
+        buffer_bindings: Dict[Node, Tuple[Any, InputInfo]] = {}
 
         # Derive user outputs that we preserve. These will be nodes of the
         # producer for the output.
-        user_outputs: list[Node] = []
-        user_output_types: list[IrType] = []
+        user_outputs: List[Node] = []
+        user_output_types: List[IrType] = []
         for output_spec in sig.output_specs:
             kind = output_spec.kind
             arg = output_spec.arg
@@ -473,8 +557,8 @@ class FxImporter:
                 mutable_buffer_target_producers[output_spec.target] = arg.name
 
         # Derive user inputs. These will be op=='placeholder' nodes.
-        user_inputs: list[Node] = []
-        user_input_types: list[IrType] = []
+        user_inputs: List[Node] = []
+        user_input_types: List[IrType] = []
         for input_spec in sig.input_specs:
             arg = input_spec.arg
             if input_spec.kind == InputKind.USER_INPUT:
@@ -508,7 +592,13 @@ class FxImporter:
                 node_ir_type = self._cc.node_val_to_type(node, mutable=False)
                 parameter_bindings[node] = (
                     value,
-                    InputInfo(prog, input_spec, node=node, ir_type=node_ir_type),
+                    InputInfo(
+                        prog,
+                        input_spec,
+                        node=node,
+                        ir_type=node_ir_type,
+                        mutable_producer_node_name=None,
+                    ),
                 )
             elif input_spec.kind == InputKind.BUFFER and isinstance(
                 arg, TensorArgument
@@ -544,7 +634,9 @@ class FxImporter:
 
         # Create the function.
         with loc:
-            func_op = func_dialect.FuncOp(func_name, ftype, ip=self._m_ip)
+            func_op = func_dialect.FuncOp(
+                func_name, ftype, ip=self._m_ip, visibility=func_visibility
+            )
             entry_block = Block.create_at_start(func_op.body, ftype.inputs)
 
         node_importer = GraphNodeImporter(
@@ -584,8 +676,15 @@ class FxImporter:
         )
         node_importer.return_node_values(loc, user_outputs)
         self.symbol_table.insert(func_op)
+        return func_op
 
-    def import_frozen_program(self, prog: torch.export.ExportedProgram):
+    def import_frozen_program(
+        self,
+        prog: torch.export.ExportedProgram,
+        *,
+        func_name: str = "main",
+        func_visibility: Optional[str] = None,
+    ) -> Operation:
         """Imports a consolidated torch.export.ExportedProgram instance.
 
         If using the new torch.export path (vs a lower level precursor), then this is
@@ -617,7 +716,7 @@ class FxImporter:
         """
         sig = prog.graph_signature
         state_dict = prog.state_dict
-        arg_replacements: dict[str, Any] = {}
+        arg_replacements: Dict[str, Any] = {}
 
         # If there is no "constants" attribute, consult the "state_dict". Otherwise, only look
         # at "constants". Relevant upstream patch: https://github.com/pytorch/pytorch/pull/118969
@@ -664,17 +763,25 @@ class FxImporter:
                 node.replace_all_uses_with(replacement)
                 g.erase_node(node)
 
-        self.import_stateless_graph(g)
+        return self.import_stateless_graph(
+            g, func_name=func_name, func_visibility=func_visibility
+        )
 
-    def import_graph_module(self, gm: GraphModule):
+    def import_graph_module(self, gm: GraphModule) -> Operation:
         """Low-level import of a GraphModule assuming that it has been functionalized.
 
         TODO: This mechanism is deprecated by the `import_program` entry-point and
         it should be removed when no longer required for backwards compatibility.
         """
-        self.import_stateless_graph(gm.graph)
+        return self.import_stateless_graph(gm.graph)
 
-    def import_stateless_graph(self, g: Graph, func_name: str = "main"):
+    def import_stateless_graph(
+        self,
+        g: Graph,
+        *,
+        func_name: str = "main",
+        func_visibility: Optional[str] = None,
+    ) -> Operation:
         """Low-level import of a functionalized, assumed stateless Graph as a func.
 
         TODO: This mechanism is deprecated by the `import_program` entry-point and
@@ -689,6 +796,7 @@ class FxImporter:
                 func_name,
                 ftype,
                 ip=self._m_ip,
+                visibility=func_visibility,
             )
             entry_block = Block.create_at_start(func.body, ftype.inputs)
         node_importer = GraphNodeImporter(
@@ -699,6 +807,7 @@ class FxImporter:
         )
         node_importer.import_nodes(g.nodes)
         self.symbol_table.insert(func)
+        return func
 
     def _graph_to_function_meta(self, g: Graph) -> Tuple[FunctionType, Location]:
         """Extracts function metadata from the Graph.
@@ -920,7 +1029,7 @@ class GraphNodeImporter:
         # constructs and returns a value.
         self._v: Dict[Union[Callable[[], Value], Tuple[torch_fx.Node, int]], Value] = {}
         # Map of node name to hook that should be called when it is produced.
-        self._on_node_produced: dict[str, Callable[[Value], None]] = {}
+        self._on_node_produced: Dict[str, Callable[[Value], None]] = {}
         # Statically multi-result nodes which we have de-tupled are noted here.
         # They will have their getitem calls short-circuited.
         self._multi_result_nodes: Set[torch_fx.Node] = set()
@@ -1035,7 +1144,7 @@ class GraphNodeImporter:
 
             self._on_node_produced[info.mutable_producer_node_name] = on_produced
 
-    def return_node_values(self, loc, nodes: list[Node]):
+    def return_node_values(self, loc, nodes: List[Node]):
         with loc, InsertionPoint(self._b):
             operands = [self.resolve_node_value(n) for n in nodes]
             func_dialect.ReturnOp(operands, loc=loc)
@@ -1084,14 +1193,14 @@ class GraphNodeImporter:
                             raise NotImplementedError(
                                 f"General getitem access to non-multi-result ops"
                             )
-                    elif isinstance(target, TorchOpOverload):
-                        # Dispatch to an ATen op.
-                        self._import_torch_op_overload(loc, node, target)
                     elif target in SYMBOLIC_TORCH_OPS or (
                         is_symbolic(node.meta.get("val"))
                         and is_builtin_function_or_method(target)
                     ):
                         self._import_symbolic_torch_op(loc, node, target)
+                    elif isinstance(target, TorchOpOverload):
+                        # Dispatch to an ATen op.
+                        self._import_torch_op_overload(loc, node, target)
                     else:
                         raise NotImplementedError(
                             f"FIX ME: Unimplemented call_function: target={node.target}, {node.meta}"
@@ -1174,7 +1283,10 @@ class GraphNodeImporter:
             ), f"Unsupported builtin function for symbolic types: {target} with args {node.args}"
             concrete_target = getattr(torch_op, op_overload)
         else:
-            concrete_target = SYMBOLIC_OP_TO_TORCH_OP.get((target, len(node.args)))
+            if _IS_TORCH_2_1_OR_EARLIER:
+                concrete_target = SYMBOLIC_OP_TO_TORCH_OP.get((target, len(node.args)))
+            else:
+                concrete_target = SYMBOLIC_OP_TO_TORCH_OP.get(target)
 
         assert (
             concrete_target is not None
@@ -1187,10 +1299,16 @@ class GraphNodeImporter:
         # replace lift_fresh_copy with clone op
         if target == torch.ops.aten.lift_fresh_copy.default:
             node.target = target = torch.ops.aten.clone.default
-            node.args = (node.args[0], None)
+            node.args = (node.args[0],)
+            node.kwargs = {"memory_format": None}
         elif target == torch.ops.aten.lift_fresh_copy.out:
+            # TODO: It seems not possible to hit this case from user code.
+            # Retaining in case if it is triggered internally somehow, but
+            # it can most likely be removed once assuming full
+            # functionalization in all cases.
             node.target = target = torch.ops.aten.clone.out
-            node.args = (node.args[0], None, node.args[1])
+            node.args = (node.args[0],)
+            node.kwargs = {"memory_format": None, "out": node.args[1]}
         # TODO: generalize empty.memory_format in the future
         # Currently, the aten.baddbmm.default op for Unet includes multiplying an
         # empty.memory_format input with a constant, which creates NaN values

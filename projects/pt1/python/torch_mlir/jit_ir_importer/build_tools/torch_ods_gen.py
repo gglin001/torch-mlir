@@ -286,7 +286,6 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
             "aten::atanh : (Tensor) -> (Tensor)",
             "aten::atan2 : (Tensor, Tensor) -> (Tensor)",
             "aten::neg : (Tensor) -> (Tensor)",
-            "aten::ceil : (Tensor) -> (Tensor)",
             "aten::bitwise_not : (Tensor) -> (Tensor)",
             "aten::div.Tensor : (Tensor, Tensor) -> (Tensor)",
             "aten::logical_or : (Tensor, Tensor) -> (Tensor)",
@@ -301,12 +300,6 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
             "aten::le.Tensor : (Tensor, Tensor) -> (Tensor)",
             "aten::ne.Tensor : (Tensor, Tensor) -> (Tensor)",
             "aten::div.Scalar : (Tensor, Scalar) -> (Tensor)",
-            "aten::ne.Scalar : (Tensor, Scalar) -> (Tensor)",
-            "aten::eq.Scalar : (Tensor, Scalar) -> (Tensor)",
-            "aten::gt.Scalar : (Tensor, Scalar) -> (Tensor)",
-            "aten::ge.Scalar : (Tensor, Scalar) -> (Tensor)",
-            "aten::lt.Scalar : (Tensor, Scalar) -> (Tensor)",
-            "aten::le.Scalar : (Tensor, Scalar) -> (Tensor)",
             "aten::fmod.Scalar : (Tensor, Scalar) -> (Tensor)",
             "aten::masked_fill.Scalar : (Tensor, Tensor, Scalar) -> (Tensor)",
             "aten::clamp : (Tensor, Scalar?, Scalar?) -> (Tensor)",
@@ -340,18 +333,27 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     # Elementwise tensor compute ops that don't have the standard mutating
     # variants.
     emit_with_mutating_variants("aten::div.Tensor_mode : (Tensor, Tensor, str?) -> (Tensor)", has_canonicalizer=True)
-    emit_with_mutating_variants("aten::mul.Tensor : (Tensor, Tensor) -> (Tensor)", has_canonicalizer=True)
-    emit_with_mutating_variants("aten::add.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)", has_canonicalizer=True)
-    emit_with_mutating_variants("aten::sub.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)", has_canonicalizer=True)
+    emit_with_mutating_variants("aten::mul.Tensor : (Tensor, Tensor) -> (Tensor)", has_canonicalizer=True, has_folder=True)
+    emit_with_mutating_variants("aten::add.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)", has_canonicalizer=True, has_folder=True)
+    emit_with_mutating_variants("aten::sub.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)", has_canonicalizer=True, has_folder=True)
     emit_with_mutating_variants("aten::add.Scalar : (Tensor, Scalar, Scalar) -> (Tensor)", has_canonicalizer=True)
     emit_with_mutating_variants("aten::sub.Scalar : (Tensor, Scalar, Scalar) -> (Tensor)", has_canonicalizer=True)
     emit_with_mutating_variants("aten::mul.Scalar : (Tensor, Scalar) -> (Tensor)", has_canonicalizer=True)
     emit_with_mutating_variants("aten::eq.Tensor : (Tensor, Tensor) -> (Tensor)", has_folder=True)
-    emit_with_mutating_variants("aten::floor : (Tensor) -> (Tensor)", has_canonicalizer=True)
+    emit_with_mutating_variants("aten::le.Scalar : (Tensor, Scalar) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::lt.Scalar : (Tensor, Scalar) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::gt.Scalar : (Tensor, Scalar) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::ge.Scalar : (Tensor, Scalar) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::eq.Scalar : (Tensor, Scalar) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::ne.Scalar : (Tensor, Scalar) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::floor : (Tensor) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::ceil : (Tensor) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::round : (Tensor) -> (Tensor)", has_folder=True)
     emit_with_mutating_variants("aten::masked_fill.Tensor : (Tensor, Tensor, Tensor) -> (Tensor)", has_canonicalizer=True)
 
     emit_with_mutating_variants("aten::addcmul : (Tensor, Tensor, Tensor, Scalar) -> (Tensor)")
     emit_with_mutating_variants("aten::addcdiv : (Tensor, Tensor, Tensor, Scalar) -> (Tensor)")
+    emit("aten::fake_quantize_per_tensor_affine : (Tensor, float, int, int, int) -> (Tensor)")
     emit("aten::maximum : (Tensor, Tensor) -> (Tensor)")
     emit("aten::minimum : (Tensor, Tensor) -> (Tensor)")
     emit("aten::mish : (Tensor) -> (Tensor)")
@@ -397,7 +399,6 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
 
     emit_with_mutating_variants("aten::triu : (Tensor, int) -> (Tensor)")
     emit_with_mutating_variants("aten::tril : (Tensor, int) -> (Tensor)")
-    emit_with_mutating_variants("aten::round : (Tensor) -> (Tensor)", has_folder=True)
     emit_with_mutating_variants(
         "aten::index_put : (Tensor, Tensor?[], Tensor, bool) -> (Tensor)")
     emit_with_mutating_variants(
@@ -438,6 +439,9 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
         "aten::batch_norm : (Tensor, Tensor?, Tensor?, Tensor?, Tensor?, bool, float, float, bool) -> (Tensor)"
     )
     emit(
+        "aten::instance_norm : (Tensor, Tensor?, Tensor?, Tensor?, Tensor?, bool, float, float, bool) -> (Tensor)"
+    )
+    emit(
         "aten::native_group_norm : (Tensor, Tensor?, Tensor?, int, int, int, int, float) -> (Tensor, Tensor, Tensor)"
     )
     emit(
@@ -446,6 +450,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit(
         "aten::layer_norm : (Tensor, int[], Tensor?, Tensor?, float, bool) -> (Tensor)"
     )
+    emit("aten::norm.Scalar : (Tensor, Scalar) -> (Tensor)", has_verifier=True)
     emit(
         "aten::norm.ScalarOpt_dim : (Tensor, Scalar?, int[], bool) -> (Tensor)"
     )
@@ -507,7 +512,9 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::adaptive_avg_pool3d : (Tensor, int[]) -> (Tensor)")
     emit("aten::_adaptive_avg_pool3d : (Tensor, int[]) -> (Tensor)")
     emit("aten::_adaptive_avg_pool3d_backward : (Tensor, Tensor) -> (Tensor)")
+    emit("aten::adaptive_max_pool1d : (Tensor, int[]) -> (Tensor, Tensor)")
     emit("aten::adaptive_max_pool2d : (Tensor, int[]) -> (Tensor, Tensor)")
+    emit("aten::adaptive_max_pool3d : (Tensor, int[]) -> (Tensor, Tensor)")
     emit("aten::topk : (Tensor, int, int, bool, bool) -> (Tensor, Tensor)")
     emit("aten::transpose.int : (Tensor, int, int) -> (Tensor)")
     emit("aten::pixel_shuffle : (Tensor, int) -> (Tensor)")
@@ -538,6 +545,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::nll_loss_backward : (Tensor, Tensor, Tensor, Tensor?, int, int, Tensor) -> (Tensor)")
     emit("aten::bincount : (Tensor, Tensor?, int) -> (Tensor)")
     emit("aten::linalg_vector_norm : (Tensor, Scalar, int[]?, bool, int?) -> (Tensor)")
+    emit("aten::linalg_norm : (Tensor, Scalar?, int[]?, bool, int?) -> (Tensor)")
     emit("aten::linalg_qr : (Tensor, str) -> (Tensor, Tensor)")
     emit("aten::frobenius_norm.dim : (Tensor, int[], bool) -> (Tensor)")
     emit("aten::mse_loss : (Tensor, Tensor, int) -> (Tensor)")
@@ -553,6 +561,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::log_sigmoid_backward : (Tensor, Tensor, Tensor) -> (Tensor)")
     emit("aten::sigmoid_backward : (Tensor, Tensor) -> (Tensor)")
     emit("aten::cosine_embedding_loss : (Tensor, Tensor, Tensor, float, int) -> (Tensor)")
+    emit("aten::diag_embed : (Tensor, int, int, int) -> (Tensor)")
 
     # Misc tensor ops.
     emit("aten::constant_pad_nd : (Tensor, int[], Scalar) -> (Tensor)")
@@ -578,7 +587,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::tensor.bool : (bool, int?, Device?, bool) -> (Tensor)")
     emit("aten::tensor.int : (int, int?, Device?, bool) -> (Tensor)")
     emit("aten::scalar_tensor : (Scalar, int?, int?, Device?, bool?) -> (Tensor)")
-    emit("aten::_shape_as_tensor : (Tensor) -> (Tensor)")
+    emit("aten::_shape_as_tensor : (Tensor) -> (Tensor)", has_folder=True)
     emit("aten::isnan : (Tensor) -> (Tensor)")
     emit("aten::isinf : (Tensor) -> (Tensor)")
     emit("aten::isneginf : (Tensor) -> (Tensor)")
@@ -665,8 +674,8 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::gather : (Tensor, int, Tensor, bool) -> (Tensor)")
     emit_with_mutating_variants("aten::scatter_add : (Tensor, int, Tensor, Tensor) -> (Tensor)")
     emit_with_mutating_variants("aten::scatter_reduce.two : (Tensor, int, Tensor, Tensor, str, bool) -> (Tensor)")
-    emit("aten::IntImplicit : (Tensor) -> (int)")
-    emit("aten::FloatImplicit : (Tensor) -> (float)")
+    emit("aten::IntImplicit : (Tensor) -> (int)", has_canonicalizer=True)
+    emit("aten::FloatImplicit : (Tensor) -> (float)", has_canonicalizer=True)
     emit("aten::tensor.float : (float, int?, Device?, bool) -> (Tensor)")
     emit("aten::Int.Tensor : (Tensor) -> (int)", has_folder=True)
     emit("aten::Float.Tensor : (Tensor) -> (float)", has_folder=True)
@@ -682,6 +691,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::fmod.Tensor : (Tensor, Tensor) -> (Tensor)")
     emit("aten::unique_consecutive : (Tensor, bool, bool, int?) -> (Tensor, Tensor, Tensor)")
     emit("aten::linspace : (Scalar, Scalar, int, int?, int?, Device?, bool?) -> (Tensor)")
+    emit("aten::linalg_cross : (Tensor, Tensor, int) -> (Tensor)", has_verifier=True)
 
     # Functionalization ops
     emit("aten::alias_copy : (Tensor) -> (Tensor)")
@@ -711,6 +721,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::as_strided_scatter : (Tensor, Tensor, int[], int[], int?) -> (Tensor)")
     emit("aten::upsample_nearest2d : (Tensor, int[], float?, float?) -> (Tensor)")
     emit("aten::scaled_dot_product_attention : (Tensor, Tensor, Tensor, Tensor?, float, bool, float?) -> (Tensor)")
+    emit("aten::grid_sampler : (Tensor, Tensor, int, int, bool) -> (Tensor)")
 
     # Dict ops.
     emit("aten::__contains__.str : (Dict(str, t), str) -> (bool)", has_folder=True)
@@ -722,7 +733,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::Delete.Dict_str : (Dict(str, t), str) -> ()")
 
     # List ops.
-    emit("aten::cat : (Tensor[], int) -> (Tensor)", has_folder=True)
+    emit("aten::cat : (Tensor[], int) -> (Tensor)", has_canonicalizer=True, has_folder=True)
     emit("aten::stack : (Tensor[], int) -> (Tensor)")
     emit("aten::append.t : (t[], t) -> (t[])")
     emit("aten::add.t : (t[], t[]) -> (t[])", has_canonicalizer=True)
@@ -736,6 +747,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::sort : (Tensor, int, bool) -> (Tensor, Tensor)", has_folder=True)
     emit("aten::split.Tensor : (Tensor, int, int) -> (Tensor[])")
     emit("aten::split_with_sizes : (Tensor, int[], int) -> (Tensor[])")
+    emit("aten::split.sizes : (Tensor, int[], int) -> (Tensor[])")
     emit("aten::unbind.int : (Tensor, int) -> (Tensor[])")
     emit("aten::chunk : (Tensor, int, int) -> (Tensor[])")
 
@@ -746,6 +758,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::str : (t) -> (str)")
     emit("aten::format : (...) -> (str)")
     emit("aten::join : (str, str[]) -> (str)")
+    emit("aten::warn : (str, int) -> ()")
 
     # Type conversion ops.
     emit("aten::Float.Scalar : (Scalar) -> (float)", has_folder=True)
@@ -797,6 +810,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
          has_canonicalizer=True)
     emit("aten::__getitem__.t : (t[], int) -> (t)", has_canonicalizer=True)
     emit("aten::_set_item.t : (t[], int, t) -> (t[])")
+    emit("aten::mul : (Scalar, Scalar) -> (Scalar)", has_folder=True)
     emit("aten::div : (Scalar, Scalar) -> (float)", has_folder=True)
     emit("aten::add : (Scalar, Scalar) -> (Scalar)", has_folder=True)
     emit("aten::sub : (Scalar, Scalar) -> (Scalar)", has_folder=True)
@@ -843,7 +857,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("prim::device : (Tensor) -> (Device)", has_canonicalizer=True)
     emit("prim::dtype : (Tensor) -> (int)", has_folder=True)
     emit("prim::TupleUnpack : (Any) -> (...)", has_canonicalizer=True)
-    emit("prim::NumToTensor.Scalar : (Scalar) -> (Tensor)")
+    emit("prim::NumToTensor.Scalar : (Scalar) -> (Tensor)", has_folder=True)
     emit("prim::min.self_int : (int[]) -> (int)", has_folder=True)
     emit("prim::min.int : (int, int) -> (int)", has_folder=True)
     emit("prim::max.self_int : (int[]) -> (int)")

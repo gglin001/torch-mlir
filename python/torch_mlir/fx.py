@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 # Also available under a BSD-style license. See LICENSE.
 
-from typing import Optional
+from typing import Optional, Union, Dict, Tuple, Any
 
 import warnings
 
@@ -20,9 +20,10 @@ def export_and_import(
     f,
     *args,
     fx_importer: Optional[FxImporter] = None,
-    constraints: Optional[torch.export.Constraint] = None,
+    dynamic_shapes: Optional[Union[Dict[str, Any], Tuple[Any]]] = None,
     experimental_support_mutation: bool = False,
     hooks: Optional[FxImporterHooks] = None,
+    func_name: str = "main",
     **kwargs,
 ):
     context = ir.Context()
@@ -30,14 +31,28 @@ def export_and_import(
 
     if fx_importer is None:
         fx_importer = FxImporter(context=context, hooks=hooks)
-    prog = torch.export.export(f, args, kwargs, constraints=constraints)
+    prog = torch.export.export(f, args, kwargs, dynamic_shapes=dynamic_shapes)
     decomp_table = get_decomposition_table()
     prog = prog.run_decompositions(decomp_table)
     if experimental_support_mutation:
         if torch.__version__ < "2.3.0.dev20240207":
             warnings.warn("Mutable program import only supported on PyTorch 2.3+")
-        fx_importer.import_program(prog)
+        fx_importer.import_program(prog, func_name=func_name)
     else:
-        fx_importer.import_frozen_program(prog)
+        fx_importer.import_frozen_program(prog, func_name=func_name)
 
-    return fx_importer.module_op
+    return fx_importer.module
+
+
+def stateless_fx_import(
+    gm: torch.fx.GraphModule,
+    fx_importer: Optional[FxImporter] = None,
+    hooks: Optional[FxImporterHooks] = None,
+    model_name: str = "main",
+):
+    context = ir.Context()
+    torch_d.register_dialect(context)
+    if fx_importer is None:
+        fx_importer = FxImporter(context=context, hooks=hooks)
+    fx_importer.import_stateless_graph(gm.graph, func_name=model_name)
+    return fx_importer.module

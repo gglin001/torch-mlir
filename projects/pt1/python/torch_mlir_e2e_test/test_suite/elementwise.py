@@ -413,7 +413,7 @@ class ElementwiseWhereScalarModule(torch.nn.Module):
         ([-1, -1, -1], torch.float32, True),
     ])
     def forward(self, a):
-        return torch.where(a > 0.5, 4.0, 8.0)
+        return torch.where(a > 0.5, 4.0, 8.0).to(torch.float)
 
 
 @register_test_case(module_factory=lambda: ElementwiseWhereScalarModule())
@@ -847,6 +847,29 @@ class ElementwiseGeluModule(torch.nn.Module):
 
 @register_test_case(module_factory=lambda: ElementwiseGeluModule())
 def ElementwiseGeluModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(5, 3, low=-0.5, high=0.5))
+
+
+# ==============================================================================
+
+
+class ElementwiseGeluApproximateTanhModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.gelu = torch.nn.GELU(approximate="tanh")
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.float32, True),
+    ])
+    def forward(self, x):
+        return self.gelu(x)
+
+
+@register_test_case(module_factory=lambda: ElementwiseGeluApproximateTanhModule())
+def ElementwiseGeluApproximateTanhModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(5, 3, low=-0.5, high=0.5))
 
 
@@ -2503,6 +2526,68 @@ def ElementwiseRemainderScalarModule_Bool_basic(module, tu: TestUtils):
 
 
 # ==============================================================================
+    
+class ElementwiseFmodTensor_Float(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1], torch.float32, True),
+        ([-1], torch.float32, True)
+    ])
+    def forward(self, x, y):
+        return torch.fmod(x, y)
+
+
+@register_test_case(module_factory=lambda: ElementwiseFmodTensor_Float())
+def ElementwiseFmodTensor_Float_basic(module, tu: TestUtils):
+    module.forward(tu.rand(100, low=-10, high=10), tu.rand(100, low=-10, high=10))
+    
+# ==============================================================================
+    
+class ElementwiseFmodTensor_Int_Float(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1], torch.int32, True),
+        ([-1], torch.float32, True)
+    ])
+    def forward(self, x, y):
+        return torch.fmod(x, y)
+
+
+@register_test_case(module_factory=lambda: ElementwiseFmodTensor_Int_Float())
+def ElementwiseFmodTensor_Int_Float_basic(module, tu: TestUtils):
+    module.forward(tu.randint(100, low=-10, high=10).to(torch.int32), tu.rand(100, low=-10, high=10))
+
+# ==============================================================================
+    
+class ElementwiseFmodTensor_Int(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1], torch.int32, True),
+        ([-1], torch.int32, True),
+    ])
+    def forward(self, x, y):
+        return torch.fmod(x, y)
+
+
+@register_test_case(module_factory=lambda: ElementwiseFmodTensor_Int())
+def ElementwiseFmodTensor_Int_basic(module, tu: TestUtils):
+    module.forward(tu.randint(100, low=0, high=1000).to(torch.int32), tu.randint(100, low=1, high=1000).to(torch.int32))
+    # ==============================================================================
 
 
 class ElementwiseRemainderTensorModule_Int_Float(torch.nn.Module):
@@ -2590,6 +2675,52 @@ class ElementwiseDivTensorFloatModule(torch.nn.Module):
 @register_test_case(module_factory=lambda: ElementwiseDivTensorFloatModule())
 def ElementwiseDivTensorFloatModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(4), tu.rand(4).type(torch.float64))
+
+
+# ==============================================================================
+
+
+class ElementwiseDivTensorIntegerModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.int64, True),
+        ([-1, -1], torch.int32, True),
+    ])
+    def forward(self, a, b):
+        return torch.div(a, b)
+
+
+@register_test_case(module_factory=lambda: ElementwiseDivTensorIntegerModule())
+def ElementwiseDivTensorIntegerModule_basic(module, tu: TestUtils):
+    module.forward(tu.randint(3, 4, low=-10, high=10), tu.randint(3, 4, low=-10, high=10).type(torch.int32))
+
+
+# ==============================================================================
+
+
+class ElementwiseDivTensorUnsignedIntegerModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.uint8, True),
+        ([-1, -1], torch.uint8, True),
+    ])
+    def forward(self, a, b):
+        return torch.div(a, b)
+
+
+@register_test_case(module_factory=lambda: ElementwiseDivTensorUnsignedIntegerModule())
+def ElementwiseDivTensorUnsignedIntegerModule_basic(module, tu: TestUtils):
+    module.forward(tu.randint(3, 4, low=0, high=10).to(torch.uint8), tu.randint(3, 4, low=0, high=10).type(torch.uint8))
 
 
 # ==============================================================================
@@ -3833,7 +3964,7 @@ class ElementwiseAtenIsposinfOpModule(torch.nn.Module):
         ([2, 5], torch.float32, True),
     ])
     def forward(self, x):
-        return torch.ops.aten.isposinf(x) 
+        return torch.ops.aten.isposinf(x)
 
 @register_test_case(module_factory=lambda: ElementwiseAtenIsposinfOpModule())
 def ElementwiseAtenIsposinfOpModule_basic(module, tu:TestUtils):
@@ -4544,6 +4675,31 @@ class ElementwiseQuantizePerTensorModule(torch.nn.Module):
 def ElementwiseQuantizePerTensorModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(3, 4))
 
+# ==============================================================================
+
+class ElementwiseQuantizePerTensorUIntModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.float, True),
+    ])
+    def forward(self, x):
+        scale = 0.04
+        zp = 11
+        dtype = torch.quint8
+        # We return the int representation as we can not map to quint8 type yet on boundaries.
+        q = torch.quantize_per_tensor(x, scale, zp, dtype).int_repr()
+        q = q.to(torch.int8)
+        return q
+
+@register_test_case(module_factory=lambda: ElementwiseQuantizePerTensorUIntModule())
+def ElementwiseQuantizePerTensorUIntModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(3, 4))
+
 
 # ==============================================================================
 
@@ -4608,5 +4764,52 @@ class GluStaticModule(torch.nn.Module):
         return torch.ops.aten.glu(x, dim=1)
 
 @register_test_case(module_factory=lambda: GluStaticModule())
-def  GluStaticModule_basic(module, tu: TestUtils):
+def GluStaticModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(3, 24, 5))
+
+# ==============================================================================
+
+class FakeQuantizePerTensorAffineModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+    @export
+    @annotate_args([
+        None,
+        ([4, 50], torch.float32, True)
+    ])
+    def forward(self, x):
+       return torch.ops.aten.fake_quantize_per_tensor_affine(x, 0.1, 1, 0, 255)
+
+@register_test_case(module_factory=lambda: FakeQuantizePerTensorAffineModule())
+def FakeQuantizePerTensorAffineModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(4, 50))
+
+class FakeQuantizePerTensorAffineDynamicShapeModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1], torch.float32, True)
+    ])
+    def forward(self, x):
+       return torch.ops.aten.fake_quantize_per_tensor_affine(x, 0.1, 1, 0, 255)
+
+@register_test_case(module_factory=lambda: FakeQuantizePerTensorAffineDynamicShapeModule())
+def FakeQuantizePerTensorAffineDynamicShapeModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand(4, 50))
+
+class FakeQuantizePerTensorAffineRoundToEvenModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+    @export
+    @annotate_args([
+        None,
+        ([4], torch.float32, True)
+    ])
+    def forward(self, x):
+       return torch.ops.aten.fake_quantize_per_tensor_affine(x, 0.1, 0, -128, 127)
+
+@register_test_case(module_factory=lambda: FakeQuantizePerTensorAffineRoundToEvenModule())
+def FakeQuantizePerTensorAffineRoundToEvenModule_basic(module, tu: TestUtils):
+    module.forward(torch.FloatTensor([0.5, 1.5, -0.5, -1.5]))

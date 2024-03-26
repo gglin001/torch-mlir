@@ -945,7 +945,7 @@ def AvgPool1dStaticModule_basic(module, tu: TestUtils):
 # ==============================================================================
 
 class AdaptiveAvgPool1dStaticLargerOutput(torch.nn.Module):
-    
+
     def __init__(self):
         super().__init__()
         self.aap1d = torch.nn.AdaptiveAvgPool1d(output_size=13)
@@ -965,7 +965,7 @@ def AdaptiveAvgPool1dStaticLargerOutput_basic(
     module.forward(tu.rand(5, 512, 7))
 
 class AdaptiveAvgPool1dStaticEvenMultiple(torch.nn.Module):
-    
+
     def __init__(self):
         super().__init__()
         self.aap1d = torch.nn.AdaptiveAvgPool1d(output_size=7)
@@ -985,7 +985,7 @@ def AdaptiveAvgPool1dStaticEvenMultiple_basic(
     module.forward(tu.rand(5, 512, 147))
 
 class AdaptiveAvgPool1dGeneralDynamic(torch.nn.Module):
-    
+
     def __init__(self):
         super().__init__()
         self.aap1d = torch.nn.AdaptiveAvgPool1d(output_size=7)
@@ -1003,6 +1003,26 @@ class AdaptiveAvgPool1dGeneralDynamic(torch.nn.Module):
 def AdaptiveAvgPool1dGeneralDynamic_basic(
         module, tu: TestUtils):
     module.forward(tu.rand(1, 512, 10))
+
+class AdaptiveAvgPool1dGeneralDynamicNoBatches(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.aap1d = torch.nn.AdaptiveAvgPool1d(output_size=7)
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.aap1d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveAvgPool1dGeneralDynamicNoBatches())
+def AdaptiveAvgPool1dGeneralDynamicNoBatches_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(512, 10))
 
 class AdaptiveAvgPool1dNonUnitOutputSizeStaticModule(torch.nn.Module):
 
@@ -1084,8 +1104,157 @@ def AdaptiveAvgPool1dUnitOutputSizeDynamicModule_basic(
         module, tu: TestUtils):
     module.forward(tu.rand(1, 512, 7))
 
-class AdaptiveMaxPool2dDynamic(torch.nn.Module):
+# AdaptiveAvgPool2d
     
+
+class AdaptiveAvgPool2dDynamic(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.aap2d = torch.nn.AdaptiveAvgPool2d(output_size=(7,13))
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.aap2d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveAvgPool2dDynamic())
+def AdaptiveAvgPool2dDynamic_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(1, 512, 10, 16))
+
+class AdaptiveAvgPool2dDynamicNoBatch(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.aap2d = torch.nn.AdaptiveAvgPool2d(output_size=(7,13))
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.aap2d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveAvgPool2dDynamicNoBatch())
+def AdaptiveAvgPool2dDynamicNoBatch_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(512, 10, 16))
+
+# AdaptiveAvgPool3d
+
+class AdaptiveAvgPool3dDynamic(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.aap3d = torch.nn.AdaptiveAvgPool3d(output_size=(7,13,15))
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.aap3d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveAvgPool3dDynamic())
+def AdaptiveAvgPool3dDynamic_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(1, 512, 10, 16, 17))
+
+class AdaptiveAvgPool3dDynamicNoBatch(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.aap3d = torch.nn.AdaptiveAvgPool3d(output_size=(7,13,15))
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.aap3d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveAvgPool3dDynamicNoBatch())
+def AdaptiveAvgPool3dDynamicNoBatch_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(512, 10, 16, 17))
+    
+# AdaptiveMaxPool1d
+
+class AdaptiveMaxPool1dDynamic(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.amp1d = torch.nn.AdaptiveMaxPool1d(output_size=(7), return_indices=False)
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp1d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool1dDynamic())
+def AdaptiveMaxPool1dDynamic_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(1, 512, 10))
+
+class AdaptiveMaxPool1dDynamicNoBatch(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.amp1d = torch.nn.AdaptiveMaxPool1d(output_size=(7), return_indices=False)
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp1d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool1dDynamicNoBatch())
+def AdaptiveMaxPool1dDynamicNoBatch_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(512, 10))
+
+class AdaptiveMaxPool1dStatic(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.amp1d = torch.nn.AdaptiveMaxPool1d(output_size=(7), return_indices=False)
+
+    @export
+    @annotate_args([
+        None,
+        ([1, 512, 10], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp1d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool1dStatic())
+def AdaptiveMaxPool1dStatic_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(1, 512, 10))
+
+# AdaptiveMaxPool2d
+
+class AdaptiveMaxPool2dDynamic(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
         self.amp2d = torch.nn.AdaptiveMaxPool2d(output_size=(7,13), return_indices=False)
@@ -1104,8 +1273,28 @@ def AdaptiveMaxPool2dDynamic_basic(
         module, tu: TestUtils):
     module.forward(tu.rand(1, 512, 10, 16))
 
-class AdaptiveMaxPool2dDynamicWithIndices(torch.nn.Module):
+class AdaptiveMaxPool2dDynamicNoBatch(torch.nn.Module):
     
+    def __init__(self):
+        super().__init__()
+        self.amp2d = torch.nn.AdaptiveMaxPool2d(output_size=(7,13), return_indices=False)
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp2d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool2dDynamicNoBatch())
+def AdaptiveMaxPool2dDynamicNoBatch_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(512, 10, 16))
+
+class AdaptiveMaxPool2dDynamicWithIndices(torch.nn.Module):
+
     def __init__(self):
         super().__init__()
         self.amp2d = torch.nn.AdaptiveMaxPool2d(output_size=(7,13), return_indices=True)
@@ -1123,10 +1312,10 @@ class AdaptiveMaxPool2dDynamicWithIndices(torch.nn.Module):
 def AdaptiveMaxPool2dDynamicWithIndices_basic(
         module, tu: TestUtils):
     module.forward(tu.rand(1, 512, 10, 16))
-    
+
 
 class AdaptiveMaxPool2dStatic(torch.nn.Module):
-    
+
     def __init__(self):
         super().__init__()
         self.amp2d = torch.nn.AdaptiveMaxPool2d(output_size=(7,13), return_indices=False)
@@ -1146,7 +1335,7 @@ def AdaptiveMaxPool2dStatic_basic(
     module.forward(tu.rand(1, 512, 10, 9))
 
 class AdaptiveMaxPool2dStaticWithIndices(torch.nn.Module):
-    
+
     def __init__(self):
         super().__init__()
         self.amp2d = torch.nn.AdaptiveMaxPool2d(output_size=(7,13), return_indices=True)
@@ -1164,3 +1353,106 @@ class AdaptiveMaxPool2dStaticWithIndices(torch.nn.Module):
 def AdaptiveMaxPool2dStaticWithIndices_basic(
         module, tu: TestUtils):
     module.forward(tu.rand(1, 512, 10, 16))
+
+# AdaptiveMaxPool3d
+
+class AdaptiveMaxPool3dDynamic(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.amp3d = torch.nn.AdaptiveMaxPool3d(output_size=(7,13,15), return_indices=False)
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp3d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool3dDynamic())
+def AdaptiveMaxPool3dDynamic_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(1, 512, 10, 16, 17))
+
+class AdaptiveMaxPool3dDynamicNoBatch(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.amp3d = torch.nn.AdaptiveMaxPool3d(output_size=(7,13,15), return_indices=False)
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp3d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool3dDynamicNoBatch())
+def AdaptiveMaxPool3dDynamicNoBatch_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(512, 10, 16, 17))
+
+class AdaptiveMaxPool3dDynamicWithIndices(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.amp3d = torch.nn.AdaptiveMaxPool3d(output_size=(7,13,15), return_indices=True)
+
+    @export
+    @annotate_args([
+        None,
+        ([-1,-1,-1,-1,-1], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp3d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool3dDynamicWithIndices())
+def AdaptiveMaxPool3dDynamicWithIndices_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(1, 512, 10, 16, 17))
+    
+
+class AdaptiveMaxPool3dStatic(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.amp3d = torch.nn.AdaptiveMaxPool3d(output_size=(7,13,15), return_indices=False)
+
+    @export
+    @annotate_args([
+        None,
+        ([1, 512, 10, 9, 5], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp3d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool3dStatic())
+def AdaptiveMaxPool3dStatic_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(1, 512, 10, 9, 5))
+
+class AdaptiveMaxPool3dStaticWithIndices(torch.nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.amp3d = torch.nn.AdaptiveMaxPool3d(output_size=(7,13,15), return_indices=True)
+
+    @export
+    @annotate_args([
+        None,
+        ([1, 512, 10, 16, 17], torch.float32, True)
+    ])
+    def forward(self,x):
+        return self.amp3d(x)
+
+@register_test_case(
+    module_factory=lambda: AdaptiveMaxPool3dStaticWithIndices())
+def AdaptiveMaxPool3dStaticWithIndices_basic(
+        module, tu: TestUtils):
+    module.forward(tu.rand(1, 512, 10, 16, 17))

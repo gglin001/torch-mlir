@@ -391,6 +391,25 @@ class FlattenDynamicModule(torch.nn.Module):
 def FlattenDynamicModule_basic(module, tu: TestUtils):
     module.forward(tu.rand(10, 3, 8, 9, 3, 4))
 
+class FlattenDynamicModuleCollapseAll(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        self.flat = torch.nn.Flatten(0)
+
+    @export
+    @annotate_args([
+        None,
+        ([-1, -1, -1, 9, 3, -1], torch.float32, True),
+    ])
+    def forward(self, x):
+        return self.flat(x)
+
+
+@register_test_case(module_factory=lambda: FlattenDynamicModuleCollapseAll())
+def FlattenDynamicModuleCollapseAll_basic(module, tu: TestUtils):
+    module.forward(tu.rand(10, 3, 8, 9, 3, 4))
+
 
 # ==============================================================================
 
@@ -3717,6 +3736,50 @@ class ScalarImplicitIntModule(torch.nn.Module):
 @register_test_case(module_factory=lambda: ScalarImplicitIntModule())
 def ScalarImplicitIntModule_basic(module, tu: TestUtils):
     module.forward(tu.randint(low=-100, high=100))
+
+
+# ==============================================================================
+
+
+class FloatImplicitModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([], torch.float64, True),
+    ])
+    def forward(self, x):
+        return float(torch.ops.aten.FloatImplicit(x))
+
+
+@register_test_case(module_factory=lambda: FloatImplicitModule())
+def FloatImplicitModule_basic(module, tu: TestUtils):
+    module.forward(tu.rand().double())
+
+
+# ==============================================================================
+
+
+class IntImplicitModule(torch.nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    @export
+    @annotate_args([
+        None,
+        ([], torch.int64, True),
+    ])
+    def forward(self, x):
+        return float(torch.ops.aten.IntImplicit(x))
+
+
+@register_test_case(module_factory=lambda: IntImplicitModule())
+def IntImplicitModule_basic(module, tu: TestUtils):
+    module.forward(tu.randint())
 
 
 # ==============================================================================

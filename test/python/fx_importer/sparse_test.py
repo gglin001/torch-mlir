@@ -5,7 +5,7 @@
 
 # RUN: %PYTHON %s | FileCheck %s
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Tuple, Dict
 
 import torch
 import torch.export
@@ -31,57 +31,56 @@ SPARSE_LAYOUTS = [
 ]
 
 
-def sparse_overhead_width(d: torch.dtype) -> int:
-    """Returns bit-width for admissible overhead type."""
-    if d is torch.int64:
-        return 64
-    if d is torch.int32:
-        return 32
-    if d is torch.int16:
-        return 16
-    if d is torch.int8:
-        return 8
-    raise RuntimeError(f"Unsupported overhead type {d}")
-
-
 def sparse_metadata(a: torch.Tensor) -> SparsityMeta:
-    """Returns a meta data tuple for the given sparse tensor."""
+    """
+    Returns a meta data tuple for the given sparse tensor.
+
+    NOTE: this will be fully replaced by fx graph SparseTensorMetadata
+    """
     sparse_dim = a.sparse_dim()
     dense_dim = a.dense_dim()
     batch_dim = a.ndim - dense_dim - sparse_dim
+    blocksize = None
     if a.layout is torch.sparse_coo:
         return SparsityMeta(
             a.layout,
             batch_dim,
             sparse_dim,
             dense_dim,
-            sparse_overhead_width(a.indices().dtype),
-            sparse_overhead_width(a.indices().dtype),
+            blocksize,
+            a.indices().dtype,
+            a.indices().dtype,
         )
     elif a.layout is torch.sparse_csr or a.layout is torch.sparse_bsr:
+        if a.layout is torch.sparse_bsr:
+            blocksize = a.values().shape[batch_dim + 1 : batch_dim + 3]
         return SparsityMeta(
             a.layout,
             batch_dim,
             sparse_dim,
             dense_dim,
-            sparse_overhead_width(a.crow_indices().dtype),
-            sparse_overhead_width(a.col_indices().dtype),
+            blocksize,
+            a.crow_indices().dtype,
+            a.col_indices().dtype,
         )
     elif a.layout is torch.sparse_csc or a.layout is torch.sparse_bsc:
+        if a.layout is torch.sparse_bsc:
+            blocksize = a.values().shape[batch_dim + 1 : batch_dim + 3]
         return SparsityMeta(
             a.layout,
             batch_dim,
             sparse_dim,
             dense_dim,
-            sparse_overhead_width(a.ccol_indices().dtype),
-            sparse_overhead_width(a.row_indices().dtype),
+            blocksize,
+            a.ccol_indices().dtype,
+            a.row_indices().dtype,
         )
     else:
         raise RuntimeError(f"Unsupported sparse layout for {a}")
 
 
 def sparse_export(
-    f: Callable, args: tuple[Any, ...], kwargs: Optional[dict[str, Any]] = None
+    f: Callable, args: Tuple[Any, ...], kwargs: Optional[Dict[str, Any]] = None
 ) -> torch.export.ExportedProgram:
     """
     This is a ***temporary*** wrapper around `torch.export.export`
@@ -105,7 +104,7 @@ def sparse_export(
     mask = [a.layout in SPARSE_LAYOUTS for a in args]
     # Build the regular FX traced graph with only dense arguments
     # (the current version would crash otherwise, see issue above).
-    prog = torch.export.export(f, dargs, kwargs, constraints=None)
+    prog = torch.export.export(f, dargs, kwargs)
     # Annotate sparse arguments in the graph. Note that we currently
     # only account for sparsity defined by the user inputs to the model.
     # TODO: support sparsity in model parameters (weights, biases)
@@ -140,7 +139,11 @@ def sparse_jit(f, *args, **kwargs):
     module = export_and_import(f, *args, *kwargs)
     run_pipeline_with_repro_report(
         module,
-        "builtin.module(torch-backend-to-linalg-on-tensors-backend-pipeline)",
+        (
+            "builtin.module("
+            "func.func(torch-decompose-complex-ops),"
+            "torch-backend-to-linalg-on-tensors-backend-pipeline)"
+        ),
         "Lowering TorchFX IR -> Linalg IR",
         enable_ir_printing=False,
     )
@@ -158,7 +161,13 @@ def sparse_jit(f, *args, **kwargs):
     for a in args:
         if a.layout is torch.sparse_coo:
             xargs.append(a.values().numpy())
-            xargs.append(a.indices().numpy())
+            # Construct the additional position array required by MLIR with data
+            # array([0, nnz]).
+            xargs.append(torch.tensor([0, a._nnz()], dtype=a.indices().dtype).numpy())
+            # Transform a tensor<ndim x nnz> into [tensor<nnz> x ndim] to conform
+            # MLIR SoA COO representation.
+            for idx in a.indices():
+                xargs.append(idx.numpy())
         elif a.layout is torch.sparse_csr or a.layout is torch.sparse_bsr:
             xargs.append(a.values().numpy())
             xargs.append(a.crow_indices().numpy())
@@ -201,13 +210,13 @@ def test_sparse_sum():
         def forward(self, x):
             return x.sum()
 
+    net = SumNet()
     dense_input = torch.ones(64, 64)
     sparse_input = dense_input.to_sparse_csr()
-    m = export_and_import(SumNet(), sparse_input)
+    m = export_and_import(net, sparse_input)
     print(m)
 
     # Run it with PyTorch torch.sparse and with TORCH-MLIR sparse_jit.
-    net = SumNet()
     res1 = net(sparse_input)
     res2 = sparse_jit(net, sparse_input)
     print("torch.sparse =", res1)
@@ -215,8 +224,43 @@ def test_sparse_sum():
 
 
 @run
+# CHECK-LABEL: test_sparse_SpMV
+# CHECK:       #[[$BSR:.*]] = #sparse_tensor.encoding<{ map = (d0, d1) -> (d0 floordiv 2 : dense, d1 floordiv 2 : compressed, d0 mod 2 : dense, d1 mod 2 : dense), posWidth = 64, crdWidth = 64 }>
+# CHECK:       func.func @main(
+# CHECK-SAME:    %[[A:.*0]]: !torch.vtensor<[10,10],f32,#[[$BSR]]>,
+# CHECK-SAME:    %[[B:.*1]]: !torch.vtensor<[10],f32>) -> !torch.vtensor<[10],f32> {
+# CHECK:         %[[R:.*]] = torch.aten.mv %[[A]], %[[B]] : !torch.vtensor<[10,10],f32,#[[$BSR]]>, !torch.vtensor<[10],f32> -> !torch.vtensor<[10],f32>
+# CHECK:         return %[[R]] : !torch.vtensor<[10],f32>
+# CHECK:       }
+#
+# CHECK: torch.sparse = tensor([55., 55., 55., 55., 55., 55., 55., 55., 55., 55.])
+# CHECK: torch.mlir   = [55. 55. 55. 55. 55. 55. 55. 55. 55. 55.]
+#
+def test_sparse_SpMV():
+    class SpMVNet(torch.nn.Module):
+        def __init__(self):
+            super(SpMVNet, self).__init__()
+
+        def forward(self, x, v):
+            return torch.mv(x, v)
+
+    net = SpMVNet()
+    dense_vector = torch.arange(1, 11, dtype=torch.float32)
+    dense_input = torch.ones(10, 10)
+    sparse_input = dense_input.to_sparse_bsr(blocksize=(2, 2))
+    m = export_and_import(net, sparse_input, dense_vector)
+    print(m)
+
+    # Run it with PyTorch torch.sparse and with TORCH-MLIR sparse_jit.
+    res1 = net(sparse_input, dense_vector)
+    res2 = sparse_jit(net, sparse_input, dense_vector)
+    print("torch.sparse =", res1)
+    print("torch.mlir   =", res2)
+
+
+@run
 # CHECK-LABEL: test_sparse_SpMM
-# CHECK:       #[[$COO:.*]] = #sparse_tensor.encoding<{ map = (d0, d1) -> (d0 : compressed(nonunique), d1 : singleton), posWidth = 64, crdWidth = 64 }>
+# CHECK:       #[[$COO:.*]] = #sparse_tensor.encoding<{ map = (d0, d1) -> (d0 : compressed(nonunique), d1 : singleton(soa)), posWidth = 64, crdWidth = 64 }>
 # CHECK:       func.func @main(
 # CHECK-SAME:    %[[A:.*0]]: !torch.vtensor<[8,8],f32,#[[$COO]]>,
 # CHECK-SAME:    %[[B:.*1]]: !torch.vtensor<[8,8],f32>) -> !torch.vtensor<[8,8],f32> {
@@ -241,15 +285,13 @@ def test_sparse_SpMM():
         def forward(self, x, y):
             return torch.matmul(x, y)
 
+    net = MatMulNet()
     dense_input = torch.ones(8, 8)
     sparse_input = dense_input.to_sparse_coo()
-    m = export_and_import(MatMulNet(), sparse_input, dense_input)
+    m = export_and_import(net, sparse_input, dense_input)
     print(m)
 
     # Run it with PyTorch torch.sparse and with TORCH-MLIR sparse_jit.
-    # TODO: run with COO, right now only CSR works
-    sparse_input = dense_input.to_sparse_csr()
-    net = MatMulNet()
     res1 = net(sparse_input, dense_input)
     res2 = sparse_jit(net, sparse_input, dense_input)
     print("torch.sparse")
@@ -288,6 +330,7 @@ def test_sparse_SpMM():
 #                       ...
 # CHECK:                [-61. -62.]
 # CHECK:                [-63. -64.]{{\]\]}}
+#
 def test_sparse_eltwise():
     class EltNet(torch.nn.Module):
         def __init__(self):
@@ -296,18 +339,19 @@ def test_sparse_eltwise():
         def forward(self, x):
             return -x
 
+    net = EltNet()
     dense_input = torch.reshape(
         torch.arange(1, 65, dtype=torch.float32), shape=(8, 4, 2)
     )
 
     # This yields a **batched** CSR.
     sparse_input = dense_input.to_sparse_csr(dense_dim=0)
-    m = export_and_import(EltNet(), sparse_input)
+    m = export_and_import(net, sparse_input)
     print(m)
 
     # This yields a plain CSR with dense **sub**tensor
     sparse_input = dense_input.to_sparse_csr(dense_dim=1)
-    m = export_and_import(EltNet(), sparse_input)
+    m = export_and_import(net, sparse_input)
     print(m)
 
     # Run it with PyTorch torch.sparse and with TORCH-MLIR sparse_jit.
@@ -316,7 +360,6 @@ def test_sparse_eltwise():
     #  (1) since we do not propagate sparsity into elt-wise, MLIR returns dense result
     #  (2) for dense_dim=0, this will need a dense(batched) property
     sparse_input = dense_input.to_sparse_csr(dense_dim=1)
-    net = EltNet()
     res1 = net(sparse_input)
     res2 = sparse_jit(net, sparse_input)
     print("torch.sparse")

@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Matchers.h"
 #include "torch-mlir/Conversion/TorchToLinalg/Utils.h"
@@ -51,6 +52,7 @@ LogicalResult prepareArgumentsForSlicingOp(OpTy op, OpAdaptor adaptor,
 
   Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
   Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  Value negone = rewriter.create<arith::ConstantIndexOp>(loc, -1);
 
   int64_t dim;
   if (!matchPattern(op.getDim(), m_TorchConstantInt(&dim)))
@@ -73,37 +75,52 @@ LogicalResult prepareArgumentsForSlicingOp(OpTy op, OpAdaptor adaptor,
       torchTypeEnd.getType().isa<OptionalType>())
     return rewriter.notifyMatchFailure(op, "unimplemented optional type arg");
 
-  int64_t step;
-  if (!matchPattern(op.getStep(), m_TorchConstantInt(&step))) {
-    if (!op.getStep().getType().template isa<Torch::NoneType>())
-      return op->emitError("unimplemented: step is not constant");
-    step = 1;
-  }
-
+  Value stepIndex = castIntToIndex(rewriter, loc, adaptor.getStep());
   Value start = toPositiveValidDim(rewriter, loc, torchTypeStart,
                                    builtinTypeStart, zero, dimSize);
-  Value end = toPositiveValidDim(rewriter, loc, torchTypeEnd, builtinTypeEnd,
-                                 dimSize, dimSize);
 
-  // end >= start ? end : start
-  Value endSgeStart = rewriter.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::sge, end, start);
-  end = rewriter.create<arith::SelectOp>(loc, endSgeStart, end, start);
-  Value stepIndex = rewriter.create<arith::ConstantIndexOp>(loc, step);
+  // We cannot use to positive valid dim as for negative strides we need to
+  // clamp to `-1` so that the full tensor bounds are available:
+  Value end = builtinTypeEnd;
+  if (torchTypeEnd.getType().isa<Torch::NoneType>()) {
+    end = dimSize;
+  } else {
+    end = castIntToIndex(rewriter, loc, end);
+    Value endcmp = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::slt, end, zero);
+    Value endadd = rewriter.create<arith::AddIOp>(loc, end, dimSize);
+    end = rewriter.create<arith::SelectOp>(loc, endcmp, endadd, end);
+    endcmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, end,
+                                            zero);
+    end = rewriter.create<arith::SelectOp>(loc, endcmp, negone, end);
+    endcmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sgt, end,
+                                            dimSize);
+    end = rewriter.create<arith::SelectOp>(loc, endcmp, dimSize, end);
+  }
 
   // Slice logic: resultSize = floordiv(end - start + step - 1,  step)
   resultShape = getTensorSizes(rewriter, loc, input);
   Value len = rewriter.create<arith::SubIOp>(loc, end, start);
+
+  // We check the difference between start and end to determine the total size:
+  Value stepcmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge,
+                                                 stepIndex, zero);
+  Value stepsign = rewriter.create<arith::SelectOp>(loc, stepcmp, one, negone);
   Value resultSize = rewriter.create<arith::AddIOp>(loc, len, stepIndex);
-  resultSize = rewriter.create<arith::SubIOp>(loc, resultSize, one);
+  resultSize = rewriter.create<arith::SubIOp>(loc, resultSize, stepsign);
   resultSize = rewriter.create<arith::FloorDivSIOp>(loc, resultSize, stepIndex);
+
+  // Clamp the size to [0, ...]:
+  Value szcmp = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
+                                               resultSize, zero);
+  resultSize = rewriter.create<arith::SelectOp>(loc, szcmp, zero, resultSize);
   resultShape[dim] = resultSize;
 
   strides.resize(inputType.getRank(), one);
   offsets.resize(inputType.getRank(), zero);
 
   offsets[dim] = start;
-  strides[dim] = rewriter.create<arith::MulIOp>(loc, strides[dim], stepIndex);
+  strides[dim] = stepIndex;
   return success();
 }
 
@@ -622,6 +639,68 @@ public:
 };
 } // namespace
 
+// Lower aten.unflatten.int into tensor.expand_shape
+namespace {
+class ConvertAtenUnflattenIntOp
+    : public OpConversionPattern<AtenUnflattenIntOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenUnflattenIntOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value self = op.getSelf();
+    BaseTensorType outputTensorType = op.getType().cast<BaseTensorType>();
+    if (!outputTensorType.hasSizes())
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: output must have known sizes");
+
+    std::optional<unsigned> maybeRank = getTensorRank(self);
+    if (!maybeRank)
+      return rewriter.notifyMatchFailure(op, "unimplemented: unranked tensor");
+    auto inputTensorType = self.getType().cast<Torch::ValueTensorType>();
+    if (!inputTensorType || !inputTensorType.hasSizes()) {
+      return rewriter.notifyMatchFailure(op,
+                                         "Expected input type having sizes");
+    }
+    int inputRank = inputTensorType.getSizes().size();
+    int outputRank = outputTensorType.getSizes().size();
+
+    int64_t dimInt;
+    if (!matchPattern(op.getDim(), m_TorchConstantInt(&dimInt)))
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: requires dim to be constants");
+
+    dimInt = toPositiveDim(dimInt, inputRank);
+    if (!isValidDim(dimInt, inputRank))
+      return rewriter.notifyMatchFailure(op, "dim is not a valid dim");
+
+    auto sizesOp = op.getSizes().getDefiningOp<Torch::PrimListConstructOp>();
+    int numSizes = sizesOp.getNumOperands();
+
+    SmallVector<ReassociationIndices> reassociations(inputRank);
+    if (inputRank > 0) {
+      for (int i = 0; i < dimInt; ++i)
+        reassociations[i].push_back(i);
+
+      for (int i = 0; i < numSizes; ++i)
+        reassociations[dimInt].push_back(i + dimInt);
+
+      for (int i = dimInt + numSizes; i < outputRank; ++i)
+        reassociations[i - numSizes + 1].push_back(i);
+    }
+
+    auto expandTy = getTypeConverter()->convertType(outputTensorType);
+    auto expand = rewriter
+                      .create<tensor::ExpandShapeOp>(
+                          loc, expandTy, adaptor.getSelf(), reassociations)
+                      .getResult();
+    rewriter.replaceOp(op, expand);
+    return success();
+  }
+};
+} // namespace
+
 namespace {
 /// The `ConvertAtenViewOp` conversion pattern converts `aten.View` op to
 /// one `linalg.TensorExpandShape` op for all expanded dimensions and one
@@ -779,14 +858,23 @@ public:
     auto resultType =
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
     int64_t resultRank = resultType.getRank();
-    if (resultRank == 0)
-      return rewriter.notifyMatchFailure(op,
-                                         "result shape of rank 0 is invalid");
+    if (resultRank == 0) {
+      rewriter
+          .replaceOpWithNewOp<tensor::CollapseShapeOp>(
+              op, resultType, input, ArrayRef<ReassociationIndices>())
+          .getResult();
+      return success();
+    }
 
-    // TODO: add support for case inputRank 0 expanded to size 1
-    if (inputRank == 0)
-      return rewriter.notifyMatchFailure(
-          op, "unimplemented: input rank 0 is not supported");
+    if (inputRank == 0) {
+      llvm::SmallVector<int64_t> outshape(resultRank, 1);
+      auto expandTy =
+          RankedTensorType::get(outshape, resultType.getElementType());
+      Value expand = rewriter.create<tensor::ExpandShapeOp>(
+          op.getLoc(), expandTy, input, ArrayRef<ReassociationIndices>());
+      rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, expand);
+      return success();
+    }
 
     // Extract the desired output size as a list of integers. This list should
     // have been created using the operation `torch.prim.ListConstruct`.
@@ -1484,6 +1572,14 @@ public:
 
     RankedTensorType newResultType =
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
+    int rank = newResultType.getRank();
+    Value dimValue = op.getDim();
+    int64_t dim;
+    if (!matchPattern(dimValue, m_TorchConstantInt(&dim)))
+      return op.emitError("unimplemented: dim is not constant");
+    dim = toPositiveDim(dim, rank);
+    if (!isValidDim(dim, rank))
+      return rewriter.notifyMatchFailure(op, "dim is statically invalid");
 
     auto outElemType = newResultType.getElementType();
     for (size_t i = 0; i < tensors.size(); ++i) {
@@ -1494,17 +1590,16 @@ public:
       }
     }
 
-    int rank = newResultType.getRank();
-    Value dimValue = op.getDim();
-    int64_t dim;
-    if (!matchPattern(dimValue, m_TorchConstantInt(&dim)))
-      return op.emitError("unimplemented: dim is not constant");
-    dim = toPositiveDim(dim, rank);
-    if (!isValidDim(dim, rank))
-      return rewriter.notifyMatchFailure(op, "dim is statically invalid");
+    llvm::SmallVector<Value> filteredTensors;
+    for (auto tensor : tensors) {
+      auto inputType = cast<RankedTensorType>(tensor.getType());
+      if (inputType.getDimSize(dim) != 0) {
+        filteredTensors.push_back(tensor);
+      }
+    }
 
     rewriter.replaceOpWithNewOp<tensor::ConcatOp>(op, newResultType, dim,
-                                                  tensors);
+                                                  filteredTensors);
     return success();
   }
 };
@@ -2000,6 +2095,159 @@ public:
 };
 } // namespace
 
+namespace {
+class ConvertAtenDiagEmbedOp : public OpConversionPattern<AtenDiagEmbedOp> {
+
+  static SmallVector<Value>
+  getDiagEmbedResultShape(OpBuilder &b, Location loc, Value tensor,
+                          int64_t offset, int64_t dim1, int64_t dim2) {
+    auto inputType = tensor.getType().cast<RankedTensorType>();
+    auto inputRank = inputType.getRank();
+
+    // output tensor always has 1 extra dimension
+    auto resultRank = inputRank + 1;
+
+    // regardless of offset sign, output tensor is same
+    Value constOffset = b.create<arith::ConstantIndexOp>(loc, offset);
+    Value absOffset = b.create<math::AbsIOp>(loc, constOffset);
+
+    // diagonal size is determined by last input dimension
+    auto lastInputDim = getDimOp(b, loc, tensor, inputRank - 1);
+    Value diagDim = b.create<arith::AddIOp>(loc, lastInputDim, absOffset);
+
+    // output shape has same dimensions as input
+    // except for the diagonal dimensions
+    int input_dim_idx = 0;
+    SmallVector<Value> resultShape;
+    for (unsigned int i = 0; i < resultRank; i++) {
+      if (i == dim1 || i == dim2)
+        resultShape.push_back(diagDim);
+      else
+        resultShape.push_back(getDimOp(b, loc, tensor, input_dim_idx++));
+    }
+
+    return resultShape;
+  }
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenDiagEmbedOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    Location loc = op->getLoc();
+
+    Value input = adaptor.getSelf();
+    auto inputType = input.getType().cast<RankedTensorType>();
+    auto inputRank = inputType.getRank();
+    auto resultRank = inputRank + 1;
+
+    int64_t offset;
+    if (!matchPattern(op.getOffset(), m_TorchConstantInt(&offset)))
+      return rewriter.notifyMatchFailure(op, "offset is not constant");
+
+    int64_t dim1;
+    if (!matchPattern(op.getDim1(), m_TorchConstantInt(&dim1)))
+      return rewriter.notifyMatchFailure(op, "dim1 is not constant");
+    dim1 = toPositiveDim(dim1, resultRank);
+    if (!isValidDim(dim1, resultRank))
+      return rewriter.notifyMatchFailure(
+          op, "dim1 can only be in closed range [" +
+                  std::to_string(-resultRank) + "," +
+                  std::to_string(resultRank - 1) + "]");
+
+    int64_t dim2;
+    if (!matchPattern(op.getDim2(), m_TorchConstantInt(&dim2)))
+      return rewriter.notifyMatchFailure(op, "dim2 is not constant");
+    dim2 = toPositiveDim(dim2, resultRank);
+    if (!isValidDim(dim2, resultRank))
+      return rewriter.notifyMatchFailure(
+          op, "dim2 can only be in closed range [" +
+                  std::to_string(-resultRank) + "," +
+                  std::to_string(resultRank - 1) + "]");
+
+    if (dim1 == dim2)
+      return rewriter.notifyMatchFailure(op, "dim1 and dim2 can not be equal");
+
+    // add linalg.fill
+    Type resultElemType = inputType.getElementType();
+    auto resultShape =
+        getDiagEmbedResultShape(rewriter, loc, input, offset, dim1, dim2);
+    Value zeroTensor =
+        createZeroInitTensor(rewriter, loc, resultShape, resultElemType);
+
+    // add linalg.generic with diagonal access pattern affine indexing maps
+    SmallVector<AffineMap> indexingMaps = {
+        rewriter.getMultiDimIdentityMap(resultRank),
+    };
+    SmallVector<utils::IteratorType> iteratorTypes(
+        resultRank, utils::IteratorType::parallel);
+    Value resultTensor =
+        rewriter
+            .create<linalg::GenericOp>(
+                loc, zeroTensor.getType(), ValueRange{}, zeroTensor,
+                /*indexingMaps=*/indexingMaps,
+                /*iteratorTypes=*/iteratorTypes,
+                [&](OpBuilder &b, Location loc, ValueRange args) {
+                  Value dim1Index = b.create<linalg::IndexOp>(loc, dim1);
+                  Value dim2Index = b.create<linalg::IndexOp>(loc, dim2);
+
+                  // to pick right element from input, first add all dimensions
+                  // except last one, then last will be either dim1 or dim2
+                  // depending upon lower or upper diagonal defined by offset
+                  // sign
+                  SmallVector<Value> inputIndices;
+                  for (unsigned int i = 0; i < resultRank; i++) {
+                    if (i != dim1 && i != dim2) {
+                      inputIndices.push_back(b.create<linalg::IndexOp>(loc, i));
+                    }
+                  }
+
+                  // adjust output diagonal indices and last input Index based
+                  // on offset
+                  Value dim1IdxAdjusted;
+                  Value dim2IdxAdjusted;
+                  if (offset < 0) {
+                    Value absOffset =
+                        b.create<arith::ConstantIndexOp>(loc, -offset);
+                    dim1IdxAdjusted = dim1Index;
+                    dim2IdxAdjusted =
+                        b.create<arith::AddIOp>(loc, dim2Index, absOffset);
+                    inputIndices.push_back(
+                        b.create<linalg::IndexOp>(loc, dim2));
+                  } else {
+                    Value constOffset =
+                        b.create<arith::ConstantIndexOp>(loc, offset);
+                    dim1IdxAdjusted =
+                        b.create<arith::AddIOp>(loc, dim1Index, constOffset);
+                    dim2IdxAdjusted = dim2Index;
+                    inputIndices.push_back(
+                        b.create<linalg::IndexOp>(loc, dim1));
+                  }
+
+                  Value isDiagonal =
+                      b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                              dim1IdxAdjusted, dim2IdxAdjusted);
+
+                  Value inputElem = b.create<tensor::ExtractOp>(
+                      loc, resultElemType, input, inputIndices);
+
+                  Value result = rewriter.create<arith::SelectOp>(
+                      loc, isDiagonal, inputElem, args[0]);
+                  b.create<linalg::YieldOp>(loc, result);
+                })
+            .getResult(0);
+
+    RankedTensorType resultType = getTypeConverter()
+                                      ->convertType(op->getResult(0).getType())
+                                      .cast<RankedTensorType>();
+
+    rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, resultTensor);
+    return success();
+  }
+};
+} // namespace
+
 void mlir::torch::torch_to_linalg::populateDataMovementPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
     ConversionTarget &target) {
@@ -2011,6 +2259,8 @@ void mlir::torch::torch_to_linalg::populateDataMovementPatternsAndLegality(
   target.addIllegalOp<AtenFlattenUsingIntsOp>();
   patterns.add<ConvertAtenFlattenUsingIntsOp>(typeConverter, context);
   target.addIllegalOp<AtenViewOp>();
+  patterns.add<ConvertAtenUnflattenIntOp>(typeConverter, context);
+  target.addIllegalOp<AtenUnflattenIntOp>();
   patterns.add<ConvertAtenViewOp>(typeConverter, context);
   target.addIllegalOp<AtenSqueezeOp>();
   patterns.add<ConvertAtenSqueezeOp>(typeConverter, context);
@@ -2040,4 +2290,6 @@ void mlir::torch::torch_to_linalg::populateDataMovementPatternsAndLegality(
   patterns.add<ConvertAtenViewAsRealOp>(typeConverter, context);
   target.addIllegalOp<AtenDiagonalOp>();
   patterns.add<ConvertAtenDiagonalOp>(typeConverter, context);
+  target.addIllegalOp<AtenDiagEmbedOp>();
+  patterns.add<ConvertAtenDiagEmbedOp>(typeConverter, context);
 }
