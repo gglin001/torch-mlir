@@ -46,10 +46,10 @@ EOF
 
 # debug
 
-torch-mlir-opt --help >demos/torch-mlir-opt.help.log
+torch-mlir-opt --help >_demos/torch-mlir-opt.help.log
 
-python -m torch_mlir.tools.import_onnx test/python/onnx_importer/LeakyReLU.onnx -o demos/test.onnx.mlir
+python -m torch_mlir.tools.import_onnx test/python/onnx_importer/LeakyReLU.onnx -o _demos/test.onnx.mlir
 torch-mlir-opt \
   --convert-torch-onnx-to-torch \
-  -o demos/torch.test.onnx.mlir \
-  demos/test.onnx.mlir
+  -o _demos/torch.test.onnx.mlir \
+  _demos/test.onnx.mlir
