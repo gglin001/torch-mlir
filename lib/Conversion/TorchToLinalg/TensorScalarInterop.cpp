@@ -178,12 +178,70 @@ public:
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
     Location loc = op.getLoc();
-    Value a = adaptor.getA();
-    Value outTensor =
-        rewriter
-            .create<tensor::EmptyOp>(loc, ArrayRef<OpFoldResult>{}, a.getType())
-            ->getResult(0);
-    rewriter.replaceOpWithNewOp<linalg::FillOp>(op, a, outTensor);
+    RankedTensorType resultType = getTypeConverter()
+                                      ->convertType(op->getResult(0).getType())
+                                      .cast<RankedTensorType>();
+    Type outElementType = resultType.getElementType();
+    Value elemVal = adaptor.getA();
+    Value elemValProm =
+        convertScalarToDtype(rewriter, loc, elemVal, outElementType);
+    Value zeroDTensor =
+        createInitTensor(rewriter, loc, {}, outElementType, elemValProm);
+    rewriter.replaceOp(op, zeroDTensor);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+class ConvertAtenFullOp : public OpConversionPattern<AtenFullOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(AtenFullOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
+      return failure();
+    Location loc = op.getLoc();
+
+    SmallVector<Value> inShape;
+    if (!getListConstructElements(adaptor.getSize(), inShape)) {
+      return rewriter.notifyMatchFailure(
+          op, "unimplemented: the size list is not from list construct");
+    }
+
+    auto resultTy = cast<RankedTensorType>(
+        this->getTypeConverter()->convertType(op.getResult().getType()));
+    if (resultTy.getRank() != static_cast<int64_t>(inShape.size()))
+      return rewriter.notifyMatchFailure(
+          op, "rank of shape and result shape do not match");
+
+    SmallVector<OpFoldResult> filteredShape;
+    for (int i = 0, s = resultTy.getRank(); i < s; ++i) {
+      if (resultTy.isDynamicDim(i)) {
+        filteredShape.push_back(inShape[i]);
+        continue;
+      }
+
+      filteredShape.push_back(rewriter.getIndexAttr(resultTy.getDimSize(i)));
+    }
+
+    Value full = adaptor.getFillValue();
+
+    if (full.getType() != resultTy.getElementType()) {
+      if (isa<mlir::FloatType>(full.getType())) {
+        full = rewriter.create<arith::TruncFOp>(loc, resultTy.getElementType(),
+                                                full);
+      } else if (isa<mlir::IntegerType>(full.getType())) {
+        full = rewriter.create<arith::TruncIOp>(loc, resultTy.getElementType(),
+                                                full);
+      }
+    }
+
+    Value outTensor = rewriter.create<tensor::EmptyOp>(
+        loc, filteredShape, resultTy.getElementType());
+
+    rewriter.replaceOpWithNewOp<linalg::FillOp>(op, full, outTensor);
 
     return success();
   }
@@ -226,6 +284,9 @@ void mlir::torch::torch_to_linalg::
   patterns.add<ConvertAtenScalarToTensorLike>(typeConverter, context);
   target.addIllegalOp<PrimNumToTensorScalarOp>();
   patterns.add<ConvertPrimNumToTensorScalarOp>(typeConverter, context);
+  target.addIllegalOp<AtenFullOp>();
+  patterns.add<ConvertAtenFullOp>(typeConverter, context);
+
   patterns.add<ConvertAtenImplicitLikeOp<AtenScalarImplicitOp>>(typeConverter,
                                                                 context);
   patterns.add<ConvertAtenImplicitLikeOp<AtenFloatImplicitOp>>(typeConverter,

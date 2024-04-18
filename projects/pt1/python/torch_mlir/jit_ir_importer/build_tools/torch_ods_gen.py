@@ -60,7 +60,13 @@ TORCH_NON_VALUE_TYPE_TO_ODS_TYPE = {
 }
 
 
-def get_ods_type(type: str, non_value: bool):
+def get_ods_type(type: str, non_value: bool, *, is_result: bool = False):
+    # In torch signatures, it is legal to return None for a Tensor, so we
+    # silently upgrade Tensor results to Tensor?. I'm not sure this is written
+    # anywhere, but Torch does use it sometimes internally. As an example,
+    # the first return of a convolution_backwards may be returned as None.
+    if is_result and type == "Tensor":
+        type = "Tensor?"
     # TODO: Increase precision on dict type modeling.
     if type.startswith("Dict("):
       type = "Dict"
@@ -158,7 +164,7 @@ def raw_emit_op(operator: JitOperator,
                 p_td("Variadic<AnyTorchType>:$results")
             else:
                 p_td(",\n".join([
-                    f"""{get_ods_type(ret["type"], is_non_value_op)}:${ret["name"] or generic_result_name(e)}"""
+                    f"""{get_ods_type(ret["type"], is_non_value_op, is_result=True)}:${ret["name"] or generic_result_name(e)}"""
                     for e, ret in enumerate(operator.returns)
                 ]))
         p_td(");")
@@ -237,9 +243,11 @@ def emit_op(operator: JitOperator,
 
 def emit_ops(emitter_td: TextEmitter, registry: Registry):
     def emit(key, **kwargs):
+        registry.assert_key_in_registry(key)
         emit_op(registry[key], emitter_td, **kwargs)
 
     def emit_with_mutating_variants(key, **kwargs):
+        registry.assert_key_in_registry(key)
         operator = registry[key]
         emit_op(operator, emitter_td, **kwargs)
         ns, unqual, overload = operator.triple
@@ -263,7 +271,6 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
             "aten::log : (Tensor) -> (Tensor)",
             "aten::selu : (Tensor) -> (Tensor)",
             "aten::sigmoid : (Tensor) -> (Tensor)",
-            "aten::sign : (Tensor) -> (Tensor)",
             "aten::sinh : (Tensor) -> (Tensor)",
             "aten::sgn : (Tensor) -> (Tensor)",
             "aten::hardsigmoid : (Tensor) -> (Tensor)",
@@ -324,21 +331,24 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
             "aten::bitwise_right_shift.Tensor : (Tensor, Tensor) -> (Tensor)",
             "aten::threshold : (Tensor, Scalar, Scalar) -> (Tensor)",
             "aten::square : (Tensor) -> (Tensor)",
-            "aten::unsqueeze : (Tensor, int) -> (Tensor)",
             "aten::zero : (Tensor) -> (Tensor)",
             "aten::fill.Scalar : (Tensor, Scalar) -> (Tensor)",
             "aten::fill.Tensor : (Tensor, Tensor) -> (Tensor)"
     ]:
         emit_with_mutating_variants(key)
+    # Shape manipulations:
+    emit_with_mutating_variants("aten::unsqueeze : (Tensor, int) -> (Tensor)", has_folder=True)
+
     # Elementwise tensor compute ops that don't have the standard mutating
     # variants.
     emit_with_mutating_variants("aten::div.Tensor_mode : (Tensor, Tensor, str?) -> (Tensor)", has_canonicalizer=True)
+    emit_with_mutating_variants("aten::div.Scalar_mode : (Tensor, Scalar, str?) -> (Tensor)", has_canonicalizer=True)
     emit_with_mutating_variants("aten::mul.Tensor : (Tensor, Tensor) -> (Tensor)", has_canonicalizer=True, has_folder=True)
     emit_with_mutating_variants("aten::add.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)", has_canonicalizer=True, has_folder=True)
     emit_with_mutating_variants("aten::sub.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)", has_canonicalizer=True, has_folder=True)
-    emit_with_mutating_variants("aten::add.Scalar : (Tensor, Scalar, Scalar) -> (Tensor)", has_canonicalizer=True)
-    emit_with_mutating_variants("aten::sub.Scalar : (Tensor, Scalar, Scalar) -> (Tensor)", has_canonicalizer=True)
-    emit_with_mutating_variants("aten::mul.Scalar : (Tensor, Scalar) -> (Tensor)", has_canonicalizer=True)
+    emit_with_mutating_variants("aten::add.Scalar : (Tensor, Scalar, Scalar) -> (Tensor)", has_canonicalizer=True, has_folder=True)
+    emit_with_mutating_variants("aten::sub.Scalar : (Tensor, Scalar, Scalar) -> (Tensor)", has_canonicalizer=True, has_folder=True)
+    emit_with_mutating_variants("aten::mul.Scalar : (Tensor, Scalar) -> (Tensor)", has_canonicalizer=True, has_folder=True)
     emit_with_mutating_variants("aten::eq.Tensor : (Tensor, Tensor) -> (Tensor)", has_folder=True)
     emit_with_mutating_variants("aten::le.Scalar : (Tensor, Scalar) -> (Tensor)", has_folder=True)
     emit_with_mutating_variants("aten::lt.Scalar : (Tensor, Scalar) -> (Tensor)", has_folder=True)
@@ -349,6 +359,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit_with_mutating_variants("aten::floor : (Tensor) -> (Tensor)", has_folder=True)
     emit_with_mutating_variants("aten::ceil : (Tensor) -> (Tensor)", has_folder=True)
     emit_with_mutating_variants("aten::round : (Tensor) -> (Tensor)", has_folder=True)
+    emit_with_mutating_variants("aten::sign : (Tensor) -> (Tensor)", has_canonicalizer=True)
     emit_with_mutating_variants("aten::masked_fill.Tensor : (Tensor, Tensor, Tensor) -> (Tensor)", has_canonicalizer=True)
 
     emit_with_mutating_variants("aten::addcmul : (Tensor, Tensor, Tensor, Scalar) -> (Tensor)")
@@ -527,6 +538,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::logsumexp : (Tensor, int[], bool) -> (Tensor)")
     emit("aten::mean.dim : (Tensor, int[]?, bool, int?) -> (Tensor)")
     emit("aten::__and__.Tensor : (Tensor, Tensor) -> (Tensor)")
+    emit("aten::__and__.Scalar : (Tensor, Scalar) -> (Tensor)", has_canonicalizer=True)
     emit("aten::__or__.Tensor : (Tensor, Tensor) -> (Tensor)",  has_canonicalizer=True)
     emit("aten::_softmax : (Tensor, int, bool) -> (Tensor)")
     emit("aten::mean : (Tensor, int?) -> (Tensor)")
@@ -636,6 +648,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::masked_select : (Tensor, Tensor) -> (Tensor)")
     emit("aten::numel : (Tensor) -> (int)", has_canonicalizer=True)
     emit("aten::repeat : (Tensor, int[]) -> (Tensor)")
+    emit("aten::repeat_interleave.self_int : (Tensor, int, int?, int?) -> (Tensor)")
     emit("aten::tile : (Tensor, int[]) -> (Tensor)")
     emit("aten::reshape : (Tensor, int[]) -> (Tensor)")
     emit("aten::reshape_as : (Tensor, Tensor) -> (Tensor)")
@@ -660,11 +673,13 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::to.other : (Tensor, Tensor, bool, bool, int?) -> (Tensor)", has_canonicalizer=True)
     emit("aten::to.prim_Device : (Tensor, Device?, int?, bool, bool) -> (Tensor)")
     emit("aten::to.device : (Tensor, Device, int, bool, bool, int?) -> (Tensor)")
+    emit("aten::_cast_Float : (Tensor, bool) -> (Tensor)", has_canonicalizer=True)
+    emit("aten::_cast_Long : (Tensor, bool) -> (Tensor)", has_canonicalizer=True)
     emit("aten::type_as : (Tensor, Tensor) -> (Tensor)")
     emit("aten::view : (Tensor, int[]) -> (Tensor)", has_folder=True)
     emit("aten::_unsafe_view : (Tensor, int[]) -> (Tensor)")
     emit("aten::where.self : (Tensor, Tensor, Tensor) -> (Tensor)", has_folder=True)
-    emit("aten::where.Scalar : (Tensor, Scalar, Scalar) -> (Tensor)", has_folder=True)
+    emit("aten::where.Scalar : (Tensor, Scalar, Scalar) -> (Tensor)", has_canonicalizer=True, has_folder=True)
     emit("aten::where.ScalarOther : (Tensor, Tensor, Scalar) -> (Tensor)", has_folder=True)
     emit("aten::where.ScalarSelf : (Tensor, Scalar, Tensor) -> (Tensor)", has_folder=True)
     emit("aten::nan_to_num : (Tensor, float?, float?, float?) -> (Tensor)")
@@ -677,7 +692,7 @@ def emit_ops(emitter_td: TextEmitter, registry: Registry):
     emit("aten::IntImplicit : (Tensor) -> (int)", has_canonicalizer=True)
     emit("aten::FloatImplicit : (Tensor) -> (float)", has_canonicalizer=True)
     emit("aten::tensor.float : (float, int?, Device?, bool) -> (Tensor)")
-    emit("aten::Int.Tensor : (Tensor) -> (int)", has_folder=True)
+    emit("aten::Int.Tensor : (Tensor) -> (int)", has_canonicalizer=True)
     emit("aten::Float.Tensor : (Tensor) -> (float)", has_folder=True)
     emit_with_mutating_variants("aten::dropout : (Tensor, float, bool) -> (Tensor)")
     emit("aten::native_dropout : (Tensor, float, bool?) -> (Tensor, Tensor)")

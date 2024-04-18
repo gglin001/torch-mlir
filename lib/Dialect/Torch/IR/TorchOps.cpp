@@ -41,9 +41,8 @@ Value mlir::torch::Torch::adjustStaticInformation(OpBuilder &builder,
     return value;
 
   // If the type is a tensor, then adjust the static information.
-  if ((type.isa<ValueTensorType>() && desiredType.isa<ValueTensorType>()) ||
-      (type.isa<NonValueTensorType>() &&
-       desiredType.isa<NonValueTensorType>())) {
+  if ((isa<ValueTensorType>(type) && isa<ValueTensorType>(desiredType)) ||
+      (isa<NonValueTensorType>(type) && isa<NonValueTensorType>(desiredType))) {
     Value adjusted = builder.create<TensorStaticInfoCastOp>(value.getLoc(),
                                                             desiredType, value);
     return adjusted;
@@ -90,7 +89,7 @@ Value mlir::torch::Torch::copyTensorToType(OpBuilder &builder, Location loc,
   // then we do the copy by going to a value tensor and back.
   if (tensor.getType().isa<NonValueTensorType>())
     tensor = builder.create<CopyToValueTensorOp>(loc, tensor);
-  if (newType.isa<NonValueTensorType>())
+  if (isa<NonValueTensorType>(newType))
     tensor = builder.create<CopyToNonValueTensorOp>(loc, tensor);
 
   return tensor;
@@ -132,11 +131,11 @@ static FloatAttr getF64FloatAttr(MLIRContext *context, double value) {
 static Value getScalarIntValue(Value input, Location loc,
                                PatternRewriter &rewriter) {
   auto inputType = input.getType();
-  if (inputType.isa<Torch::IntType>()) {
+  if (isa<Torch::IntType>(inputType)) {
     return input;
   }
 
-  auto inputTensorType = inputType.dyn_cast<BaseTensorType>();
+  auto inputTensorType = dyn_cast<BaseTensorType>(inputType);
   if (!inputTensorType)
     return nullptr;
 
@@ -150,7 +149,7 @@ static Value getScalarIntValue(Value input, Location loc,
 
   if (auto valueTensorLiteralOp = input.getDefiningOp<ValueTensorLiteralOp>()) {
     auto val = valueTensorLiteralOp.getValue()
-                   .cast<DenseElementsAttr>()
+                   .cast<DenseIntElementsAttr>()
                    .getSplatValue<int64_t>();
     return rewriter.create<Torch::ConstantIntOp>(
         loc, rewriter.getI64IntegerAttr(val));
@@ -166,11 +165,11 @@ static Value getScalarIntValue(Value input, Location loc,
 static Value getScalarFloatValue(Value input, Location loc,
                                  PatternRewriter &rewriter) {
   auto inputType = input.getType();
-  if (inputType.isa<Torch::FloatType>()) {
+  if (isa<Torch::FloatType>(inputType)) {
     return input;
   }
 
-  auto inputTensorType = inputType.dyn_cast<BaseTensorType>();
+  auto inputTensorType = dyn_cast<BaseTensorType>(inputType);
   if (!inputTensorType)
     return nullptr;
 
@@ -273,7 +272,7 @@ LogicalResult NnModuleOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
 LogicalResult PrimListConstructOp::verify() {
   auto resultType = getResult().getType();
-  auto resultElementType = resultType.dyn_cast<ListType>().getContainedType();
+  auto resultElementType = dyn_cast<ListType>(resultType).getContainedType();
   auto matchResultElementType = [&](Type type) {
     return isValidSubtype(type, resultElementType);
   };
@@ -606,7 +605,7 @@ static OpFoldResult atenIsOrIsNotFoldHelper(Operation *op, bool equalIsTrue) {
   Type rhsType = rhs.getType();
 
   // If either type is a NoneType, make it be the lhsType.
-  if (rhsType.isa<Torch::NoneType>()) {
+  if (isa<Torch::NoneType>(rhsType)) {
     std::swap(lhsType, rhsType);
     std::swap(lhs, rhs);
   }
@@ -615,14 +614,14 @@ static OpFoldResult atenIsOrIsNotFoldHelper(Operation *op, bool equalIsTrue) {
 
   // If both types are the singleton `!torch.none` type, then we don't even need
   // to look at the values.
-  if (lhsType.isa<Torch::NoneType>() && rhsType.isa<Torch::NoneType>())
+  if (isa<Torch::NoneType>(lhsType) && isa<Torch::NoneType>(rhsType))
     return IntegerAttr::get(IntegerType::get(op->getContext(), 1), equalIsTrue);
 
   // If neither type is a subtype of the other, then the result is false.
   // TODO: Implement and use subtype infra for this.
   // For now, check a specific case.
   // If the rhs is not OptionalType, then we know it cannot be None.
-  if (lhsType.isa<Torch::NoneType>() && !rhsType.isa<Torch::OptionalType>()) {
+  if (isa<Torch::NoneType>(lhsType) && !isa<Torch::OptionalType>(rhsType)) {
     return IntegerAttr::get(IntegerType::get(op->getContext(), 1),
                             !equalIsTrue);
   }
@@ -640,9 +639,9 @@ OpFoldResult Aten__RangeLengthOp::fold(FoldAdaptor adaptor) {
   auto step = adaptor.getStep();
   if (!lo || !hi || !step)
     return nullptr;
-  auto loInt = lo.dyn_cast_or_null<IntegerAttr>().getValue();
-  auto hiInt = hi.dyn_cast_or_null<IntegerAttr>().getValue();
-  auto stepInt = step.dyn_cast_or_null<IntegerAttr>().getValue();
+  auto loInt = dyn_cast_or_null<IntegerAttr>(lo).getValue();
+  auto hiInt = dyn_cast_or_null<IntegerAttr>(hi).getValue();
+  auto stepInt = dyn_cast_or_null<IntegerAttr>(step).getValue();
   // TODO: Implement folding for negative steps.
   if (stepInt.isNegative())
     return nullptr;
@@ -650,7 +649,7 @@ OpFoldResult Aten__RangeLengthOp::fold(FoldAdaptor adaptor) {
   // r[i] = lo + step*i such that i >= 0 and r[i] < hi
   // So maximize `i` such that lo + step * i < hi
   // ==> i == ceildiv(hi - lo, step)
-  return IntegerAttr::get(lo.cast<TypedAttr>().getType(),
+  return IntegerAttr::get(cast<TypedAttr>(lo).getType(),
                           llvm::APIntOps::RoundingSDiv(hiInt - loInt, stepInt,
                                                        APInt::Rounding::UP));
 }
@@ -665,10 +664,10 @@ OpFoldResult Aten__DeriveIndexOp::fold(FoldAdaptor adaptor) {
   auto step = adaptor.getStep();
   if (!index || !start || !step)
     return nullptr;
-  auto indexInt = index.dyn_cast_or_null<IntegerAttr>().getValue();
-  auto startInt = start.dyn_cast_or_null<IntegerAttr>().getValue();
-  auto stepInt = step.dyn_cast_or_null<IntegerAttr>().getValue();
-  return IntegerAttr::get(index.cast<TypedAttr>().getType(),
+  auto indexInt = dyn_cast_or_null<IntegerAttr>(index).getValue();
+  auto startInt = dyn_cast_or_null<IntegerAttr>(start).getValue();
+  auto stepInt = dyn_cast_or_null<IntegerAttr>(step).getValue();
+  return IntegerAttr::get(cast<TypedAttr>(index).getType(),
                           startInt + stepInt * indexInt);
 }
 
@@ -716,15 +715,57 @@ OpFoldResult AtenNeBoolOp::fold(FoldAdaptor adaptor) {
 }
 
 //===----------------------------------------------------------------------===//
+// AtenUnsqueezeOp
+//===----------------------------------------------------------------------===//
+
+OpFoldResult AtenUnsqueezeOp::fold(FoldAdaptor adaptor) {
+  auto selfTy = dyn_cast<BaseTensorType>(getSelf().getType());
+  auto rty = dyn_cast<BaseTensorType>(getType());
+  if (!rty.hasDtype())
+    return {};
+
+  if (auto attr = dyn_cast_or_null<DenseElementsAttr>(adaptor.getSelf())) {
+    auto aty = dyn_cast<RankedTensorType>(attr.getType());
+    if (rty.hasSizes() && rty.areAllSizesKnown() && attr.isSplat()) {
+      auto naty = RankedTensorType::get(rty.getSizes(), aty.getElementType());
+      return DenseElementsAttr::get(naty, attr.getSplatValue<Attribute>());
+    }
+  }
+
+  if (getSelf().getType() != getResult().getType())
+    return nullptr;
+  if (selfTy && rty) {
+    if (selfTy.hasSizes() && rty.hasSizes() &&
+        selfTy.getSizes().size() == rty.getSizes().size())
+      return getSelf();
+  }
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
 // AtenSqueezeOp
 //===----------------------------------------------------------------------===//
 
 OpFoldResult AtenSqueezeOp::fold(FoldAdaptor adaptor) {
-  if (getOperand().getType() != getResult().getType())
+  auto selfTy = dyn_cast<BaseTensorType>(getSelf().getType());
+  auto rty = dyn_cast<BaseTensorType>(getType());
+  if (!rty.hasDtype())
+    return {};
+
+  if (auto attr = dyn_cast_or_null<DenseElementsAttr>(adaptor.getSelf())) {
+    auto aty = dyn_cast<RankedTensorType>(attr.getType());
+    if (rty.hasSizes() && rty.areAllSizesKnown() && attr.isSplat()) {
+      auto naty = RankedTensorType::get(rty.getSizes(), aty.getElementType());
+      return DenseElementsAttr::get(naty, attr.getSplatValue<Attribute>());
+    }
+  }
+
+  if (getSelf().getType() != getResult().getType())
     return nullptr;
-  if (auto tensorType = getOperand().getType().dyn_cast<BaseTensorType>()) {
-    if (tensorType.hasSizes() && tensorType.getSizes().size() == 0)
-      return getOperand();
+  if (selfTy && rty) {
+    if (selfTy.hasSizes() && rty.hasSizes() &&
+        selfTy.getSizes().size() == rty.getSizes().size())
+      return getSelf();
   }
   return nullptr;
 }
@@ -898,6 +939,48 @@ void AtenToOtherOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
 }
 
 //===----------------------------------------------------------------------===//
+// Aten_CastFloatOp
+//===----------------------------------------------------------------------===//
+
+void Aten_CastFloatOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                   MLIRContext *context) {
+  // `aten.cast_float` -> `aten.to.dtype`
+  patterns.add(+[](Aten_CastFloatOp op, PatternRewriter &rewriter) {
+    auto self = op.getSelf();
+    auto loc = op.getLoc();
+    Value constNone = rewriter.create<ConstantNoneOp>(loc);
+    Value f32Type = rewriter.create<ConstantIntOp>(
+        loc, (int)torch_upstream::ScalarType::Float);
+    Value constFalse = rewriter.create<ConstantBoolOp>(loc, false);
+    rewriter.replaceOpWithNewOp<AtenToDtypeOp>(op, op.getType(), self, f32Type,
+                                               op.getNonBlocking(), constFalse,
+                                               constNone);
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// Aten_CastLongOp
+//===----------------------------------------------------------------------===//
+
+void Aten_CastLongOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                  MLIRContext *context) {
+  // `aten.cast_long` -> `aten.to.dtype`
+  patterns.add(+[](Aten_CastLongOp op, PatternRewriter &rewriter) {
+    auto self = op.getSelf();
+    auto loc = op.getLoc();
+    Value constNone = rewriter.create<ConstantNoneOp>(loc);
+    Value longType = rewriter.create<ConstantIntOp>(
+        loc, (int)torch_upstream::ScalarType::Long);
+    Value constFalse = rewriter.create<ConstantBoolOp>(loc, false);
+    rewriter.replaceOpWithNewOp<AtenToDtypeOp>(op, op.getType(), self, longType,
+                                               op.getNonBlocking(), constFalse,
+                                               constNone);
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
 // AtenViewOp
 //===----------------------------------------------------------------------===//
 
@@ -1033,9 +1116,9 @@ LogicalResult rewrite0DBinaryTensorOp(Operation *op,
       rhs = rewriter.create<AtenMulIntOp>(loc, rhs, alpha);
   }
 
-  if (isa<AtenDivTensorModeOp>(op)) {
-    // None rounding mode
+  if (isa<AtenDivTensorModeOp, AtenDivScalarModeOp>(op)) {
     if (op->getOperand(2).getType().isa<Torch::NoneType>()) {
+      // None rounding mode
       Value quotient = rewriter.create<AtenDivOp>(loc, lhs, rhs);
       rewriter.replaceOpWithNewOp<PrimNumToTensorScalarOp>(op, outType,
                                                            quotient);
@@ -1297,6 +1380,23 @@ void AtenAddScalarOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   });
 }
 
+OpFoldResult AtenAddScalarOp::fold(FoldAdaptor adaptor) {
+  auto fpFold = [](llvm::ArrayRef<double> inputs) {
+    assert(inputs.size() == 3);
+    return inputs[0] + (inputs[1] * inputs[2]);
+  };
+
+  auto intFold = [](llvm::ArrayRef<APInt> inputs) {
+    assert(inputs.size() == 3);
+    int64_t bits = inputs[0].getBitWidth();
+    APInt other(bits, inputs[1].getLimitedValue());
+    APInt alpha(bits, inputs[2].getLimitedValue());
+    return inputs[0] + (other * alpha);
+  };
+
+  return naryFolderHelper(adaptor.getOperands(), getType(), fpFold, intFold);
+}
+
 //===----------------------------------------------------------------------===//
 // AtenSubTensorOp
 //===----------------------------------------------------------------------===//
@@ -1331,6 +1431,23 @@ void AtenSubScalarOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   });
 }
 
+OpFoldResult AtenSubScalarOp::fold(FoldAdaptor adaptor) {
+  auto fpFold = [](llvm::ArrayRef<double> inputs) {
+    assert(inputs.size() == 3);
+    return inputs[0] - (inputs[1] * inputs[2]);
+  };
+
+  auto intFold = [](llvm::ArrayRef<APInt> inputs) {
+    assert(inputs.size() == 3);
+    int64_t bits = inputs[0].getBitWidth();
+    APInt other(bits, inputs[1].getLimitedValue());
+    APInt alpha(bits, inputs[2].getLimitedValue());
+    return inputs[0] - (other * alpha);
+  };
+
+  return naryFolderHelper(adaptor.getOperands(), getType(), fpFold, intFold);
+}
+
 //===----------------------------------------------------------------------===//
 // AtenRSubScalarOp
 //===----------------------------------------------------------------------===//
@@ -1359,7 +1476,9 @@ OpFoldResult AtenMulTensorOp::fold(FoldAdaptor adaptor) {
 
   auto intFold = [](llvm::ArrayRef<APInt> inputs) {
     assert(inputs.size() == 2);
-    return inputs[0] * inputs[1];
+    int64_t bits = inputs[0].getBitWidth();
+    APInt other(bits, inputs[1].getLimitedValue());
+    return inputs[0] * other;
   };
 
   return naryFolderHelper(adaptor.getOperands(), getType(), fpFold, intFold);
@@ -1562,7 +1681,10 @@ OpFoldResult AtenLeScalarOp::fold(FoldAdaptor adaptor) {
   auto fpFold = [](double lhs, double rhs) -> bool { return lhs <= rhs; };
 
   auto intFold = [](APInt lhs, APInt rhs, bool unsign) -> bool {
-    return unsign ? lhs.ule(rhs) : lhs.sle(rhs);
+    int64_t bits = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+    APInt lhsWiden(bits, lhs.getLimitedValue());
+    APInt rhsWiden(bits, rhs.getLimitedValue());
+    return unsign ? lhsWiden.ule(rhsWiden) : lhsWiden.sle(rhsWiden);
   };
 
   return comparisonScaleFolder(self, other, resultTy, fpFold, intFold);
@@ -1580,7 +1702,10 @@ OpFoldResult AtenLtScalarOp::fold(FoldAdaptor adaptor) {
   auto fpFold = [](double lhs, double rhs) -> bool { return lhs < rhs; };
 
   auto intFold = [](APInt lhs, APInt rhs, bool unsign) -> bool {
-    return unsign ? lhs.ult(rhs) : lhs.slt(rhs);
+    int64_t bits = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+    APInt lhsWiden(bits, lhs.getLimitedValue());
+    APInt rhsWiden(bits, rhs.getLimitedValue());
+    return unsign ? lhsWiden.ult(rhsWiden) : lhsWiden.slt(rhsWiden);
   };
 
   return comparisonScaleFolder(self, other, resultTy, fpFold, intFold);
@@ -1598,7 +1723,10 @@ OpFoldResult AtenGtScalarOp::fold(FoldAdaptor adaptor) {
   auto fpFold = [](double lhs, double rhs) -> bool { return lhs > rhs; };
 
   auto intFold = [](APInt lhs, APInt rhs, bool unsign) -> bool {
-    return unsign ? lhs.ugt(rhs) : lhs.sgt(rhs);
+    int64_t bits = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+    APInt lhsWiden(bits, lhs.getLimitedValue());
+    APInt rhsWiden(bits, rhs.getLimitedValue());
+    return unsign ? lhsWiden.ugt(rhsWiden) : lhsWiden.sgt(rhsWiden);
   };
 
   return comparisonScaleFolder(self, other, resultTy, fpFold, intFold);
@@ -1616,7 +1744,10 @@ OpFoldResult AtenGeScalarOp::fold(FoldAdaptor adaptor) {
   auto fpFold = [](double lhs, double rhs) -> bool { return lhs >= rhs; };
 
   auto intFold = [](APInt lhs, APInt rhs, bool unsign) -> bool {
-    return unsign ? lhs.uge(rhs) : lhs.sge(rhs);
+    int64_t bits = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+    APInt lhsWiden(bits, lhs.getLimitedValue());
+    APInt rhsWiden(bits, rhs.getLimitedValue());
+    return unsign ? lhsWiden.uge(rhsWiden) : lhsWiden.sge(rhsWiden);
   };
 
   return comparisonScaleFolder(self, other, resultTy, fpFold, intFold);
@@ -1634,7 +1765,10 @@ OpFoldResult AtenEqScalarOp::fold(FoldAdaptor adaptor) {
   auto fpFold = [](double lhs, double rhs) -> bool { return lhs == rhs; };
 
   auto intFold = [](APInt lhs, APInt rhs, bool unsign) -> bool {
-    return lhs.eq(rhs);
+    int64_t bits = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+    APInt lhsWiden(bits, lhs.getLimitedValue());
+    APInt rhsWiden(bits, rhs.getLimitedValue());
+    return lhsWiden.eq(rhsWiden);
   };
 
   return comparisonScaleFolder(self, other, resultTy, fpFold, intFold);
@@ -1652,7 +1786,10 @@ OpFoldResult AtenNeScalarOp::fold(FoldAdaptor adaptor) {
   auto fpFold = [](double lhs, double rhs) -> bool { return lhs != rhs; };
 
   auto intFold = [](APInt lhs, APInt rhs, bool unsign) -> bool {
-    return lhs.ne(rhs);
+    int64_t bits = std::max(lhs.getBitWidth(), rhs.getBitWidth());
+    APInt lhsWiden(bits, lhs.getLimitedValue());
+    APInt rhsWiden(bits, rhs.getLimitedValue());
+    return lhsWiden.ne(rhsWiden);
   };
 
   return comparisonScaleFolder(self, other, resultTy, fpFold, intFold);
@@ -1698,6 +1835,17 @@ OpFoldResult AtenRoundOp::fold(FoldAdaptor adaptor) {
 }
 
 //===----------------------------------------------------------------------===//
+// AtenSignOp
+//===----------------------------------------------------------------------===//
+void AtenSignOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                             MLIRContext *context) {
+  patterns.add(+[](AtenSignOp op, PatternRewriter &rewriter) {
+    rewriter.replaceOpWithNewOp<AtenSgnOp>(op, op.getType(), op.getSelf());
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
 // AtenMulScalarOp
 //===----------------------------------------------------------------------===//
 void AtenMulScalarOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
@@ -1707,12 +1855,36 @@ void AtenMulScalarOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
   });
 }
 
+OpFoldResult AtenMulScalarOp::fold(FoldAdaptor adaptor) {
+  auto fpFold = [](llvm::ArrayRef<double> inputs) {
+    assert(inputs.size() == 2);
+    return inputs[0] * inputs[1];
+  };
+
+  auto intFold = [](llvm::ArrayRef<APInt> inputs) {
+    assert(inputs.size() == 2);
+    return inputs[0] * inputs[1];
+  };
+
+  return naryFolderHelper(adaptor.getOperands(), getType(), fpFold, intFold);
+}
+
 //===----------------------------------------------------------------------===//
 // AtenDivTensorModeOp
 //===----------------------------------------------------------------------===//
 void AtenDivTensorModeOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
   patterns.add(+[](AtenDivTensorModeOp op, PatternRewriter &rewriter) {
+    return rewrite0DBinaryTensorOp(op, rewriter);
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// AtenDivScalarModeOp
+//===----------------------------------------------------------------------===//
+void AtenDivScalarModeOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(+[](AtenDivScalarModeOp op, PatternRewriter &rewriter) {
     return rewrite0DBinaryTensorOp(op, rewriter);
   });
 }
@@ -1746,6 +1918,18 @@ void Aten__Or__TensorOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *context) {
   patterns.add(+[](Aten__Or__TensorOp op, PatternRewriter &rewriter) {
     rewriter.replaceOpWithNewOp<AtenBitwiseOrTensorOp>(
+        op, op.getType(), op.getSelf(), op.getOther());
+    return success();
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// Aten__And__ScalarOp
+//===----------------------------------------------------------------------===//
+void Aten__And__ScalarOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *context) {
+  patterns.add(+[](Aten__And__ScalarOp op, PatternRewriter &rewriter) {
+    rewriter.replaceOpWithNewOp<AtenBitwiseAndScalarOp>(
         op, op.getType(), op.getSelf(), op.getOther());
     return success();
   });
@@ -2614,9 +2798,9 @@ void Torch::ConstantNumberOp::getCanonicalizationPatterns(
 
     Value constValue;
     Attribute value = op.getValueAttr();
-    if (auto floatValue = value.dyn_cast<mlir::FloatAttr>()) {
+    if (auto floatValue = dyn_cast<mlir::FloatAttr>(value)) {
       constValue = rewriter.create<Torch::ConstantFloatOp>(loc, floatValue);
-    } else if (auto intValue = value.dyn_cast<mlir::IntegerAttr>()) {
+    } else if (auto intValue = dyn_cast<mlir::IntegerAttr>(value)) {
       constValue = rewriter.create<Torch::ConstantIntOp>(loc, intValue);
     } else {
       return failure();
@@ -2934,6 +3118,9 @@ void PrimListUnpackOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
     if (!listConstruct)
       return failure();
 
+    if (op->getNumResults() != listConstruct.getElements().size())
+      return failure();
+
     rewriter.replaceOp(op, listConstruct.getElements());
     return success();
   });
@@ -3035,9 +3222,9 @@ atenBinaryFloatOperatorFoldHelper(ArrayRef<Attribute> operands,
                                   BinaryFloatOperatorFn f) {
   double lhs, rhs;
   auto parseDoubleAttribute = [](Attribute attr, double &value) -> bool {
-    if (auto intLhs = attr.dyn_cast_or_null<IntegerAttr>()) {
+    if (auto intLhs = dyn_cast_or_null<IntegerAttr>(attr)) {
       value = static_cast<double>(intLhs.getValue().getSExtValue());
-    } else if (auto floatLhs = attr.dyn_cast_or_null<FloatAttr>()) {
+    } else if (auto floatLhs = dyn_cast_or_null<FloatAttr>(attr)) {
       value = floatLhs.getValue().convertToDouble();
     } else {
       return false;
@@ -3233,14 +3420,15 @@ OpFoldResult AtenSliceTensorOp::fold(FoldAdaptor adaptor) {
   IntegerAttr end = dyn_cast_or_null<IntegerAttr>(adaptor.getEnd());
   IntegerAttr step = dyn_cast_or_null<IntegerAttr>(adaptor.getStep());
   IntegerAttr dim = dyn_cast_or_null<IntegerAttr>(adaptor.getDim());
+  auto inType = getOperand(0).getType().dyn_cast<ValueTensorType>();
+  auto outType = getResult().getType().dyn_cast<ValueTensorType>();
 
   if (start && end && step && step.getValue().getSExtValue() == 1 &&
       start.getValue().getSExtValue() == 0 &&
-      end.getValue().getSExtValue() == std::numeric_limits<int64_t>::max())
+      end.getValue().getSExtValue() == std::numeric_limits<int64_t>::max() &&
+      inType == outType)
     return getOperand(0);
 
-  auto inType = getOperand(0).getType().dyn_cast<ValueTensorType>();
-  auto outType = getResult().getType().dyn_cast<ValueTensorType>();
   if (!inType || !outType || !inType.hasSizes() || !outType.hasSizes() ||
       !inType.hasDtype() || !outType.hasDtype() ||
       inType.getDtype() != outType.getDtype())
@@ -3604,14 +3792,15 @@ OpFoldResult Aten_ShapeAsTensorOp::fold(FoldAdaptor adaptor) {
 // AtenIntTensorOp
 //===----------------------------------------------------------------------===//
 
-OpFoldResult AtenIntTensorOp::fold(FoldAdaptor adaptor) {
-  // If a scalar number is converted to a 0-d tensor and passed on to
-  // aten.Int.Tensor, fold to the scalar number.
-  if (auto numToTensorScalar = getA().getDefiningOp<PrimNumToTensorScalarOp>())
-    return numToTensorScalar.getA();
-  if (auto tensorIntOp = getA().getDefiningOp<AtenTensorIntOp>())
-    return tensorIntOp.getT();
-  return nullptr;
+void AtenIntTensorOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                  MLIRContext *context) {
+  patterns.add(+[](AtenIntTensorOp op, PatternRewriter &rewriter) {
+    Value scalarInt = getScalarIntValue(op.getA(), op.getLoc(), rewriter);
+    if (!scalarInt)
+      return failure();
+    rewriter.replaceOp(op, scalarInt);
+    return success();
+  });
 }
 
 //===----------------------------------------------------------------------===//
@@ -3755,12 +3944,23 @@ OpFoldResult AtenItemOp::fold(FoldAdaptor adaptor) {
   if (matchPattern(getOperand(), m_Constant(&attr))) {
     auto splat = attr.getSplatValue<Attribute>();
     if (auto intAttr = dyn_cast<IntegerAttr>(splat)) {
-      return getI64IntegerAttr(getContext(), intAttr.getSInt());
+      return intAttr.getType().isUnsignedInteger()
+                 ? getI64IntegerAttr(getContext(), intAttr.getUInt())
+                 : getI64IntegerAttr(getContext(), intAttr.getSInt());
     }
     if (auto floatAttr = dyn_cast<FloatAttr>(splat)) {
       return getF64FloatAttr(getContext(), floatAttr.getValueAsDouble());
     }
     return nullptr;
+  }
+
+  if (auto full = getOperand().getDefiningOp<Torch::AtenFullOp>()) {
+    return full.getFillValue();
+  }
+
+  if (auto numToTensor =
+          getOperand().getDefiningOp<Torch::PrimNumToTensorScalarOp>()) {
+    return numToTensor.getA();
   }
 
   return nullptr;
@@ -3776,7 +3976,7 @@ OpFoldResult AtenOnesOp::fold(FoldAdaptor adaptor) {
   }
 
   Type resultType = getResult().getType();
-  BaseTensorType resultTensorType = resultType.dyn_cast<BaseTensorType>();
+  BaseTensorType resultTensorType = dyn_cast<BaseTensorType>(resultType);
   if (!resultTensorType || !resultTensorType.hasDtype() ||
       !resultTensorType.hasSizes()) {
     return nullptr;
@@ -3797,11 +3997,11 @@ OpFoldResult AtenOnesOp::fold(FoldAdaptor adaptor) {
     return nullptr;
   }
   auto elementType = shapedty.getElementType();
-  if (elementType.isa<IntegerType>()) {
+  if (isa<IntegerType>(elementType)) {
     Attribute attribute = IntegerAttr::get(elementType, 1);
     return DenseElementsAttr::get(shapedty, attribute);
   }
-  if (elementType.isa<FloatType>()) {
+  if (isa<FloatType>(elementType)) {
     Attribute attribute = FloatAttr::get(elementType, 1.0);
     return DenseElementsAttr::get(shapedty, attribute);
   }
@@ -3815,7 +4015,7 @@ OpFoldResult AtenZerosOp::fold(FoldAdaptor adaptor) {
   }
 
   Type resultType = getResult().getType();
-  BaseTensorType resultTensorType = resultType.dyn_cast<BaseTensorType>();
+  BaseTensorType resultTensorType = dyn_cast<BaseTensorType>(resultType);
   if (!resultTensorType || !resultTensorType.hasDtype() ||
       !resultTensorType.hasSizes()) {
     return nullptr;
@@ -3837,11 +4037,11 @@ OpFoldResult AtenZerosOp::fold(FoldAdaptor adaptor) {
   }
 
   auto elementType = shapedty.getElementType();
-  if (elementType.isa<IntegerType>()) {
+  if (isa<IntegerType>(elementType)) {
     Attribute attribute = IntegerAttr::get(elementType, 0);
     return DenseElementsAttr::get(shapedty, attribute);
   }
-  if (elementType.isa<FloatType>()) {
+  if (isa<FloatType>(elementType)) {
     Attribute attribute = FloatAttr::get(elementType, 0.0);
     return DenseElementsAttr::get(shapedty, attribute);
   }
@@ -3856,7 +4056,7 @@ OpFoldResult AtenFullOp::fold(FoldAdaptor adaptor) {
   }
 
   Type resultType = getResult().getType();
-  BaseTensorType resultTensorType = resultType.dyn_cast<BaseTensorType>();
+  BaseTensorType resultTensorType = dyn_cast<BaseTensorType>(resultType);
   if (!resultTensorType || !resultTensorType.hasDtype() ||
       !resultTensorType.hasSizes()) {
     return nullptr;
@@ -3870,18 +4070,18 @@ OpFoldResult AtenFullOp::fold(FoldAdaptor adaptor) {
     if (sz == Torch::kUnknownSize || sz < 0)
       return nullptr;
 
-  ShapedType shapedty =
-      mlir::RankedTensorType::get(sizes, resultTensorType.getDtype());
+  ShapedType shapedty = mlir::RankedTensorType::get(
+      resultTensorType.getSizes(), resultTensorType.getDtype());
 
   auto elementType = shapedty.getElementType();
-  if (elementType.isa<IntegerType>()) {
+  if (isa<IntegerType>(elementType)) {
     int64_t value = 0;
     if (matchPattern(getFillValue(), m_TorchConstantInt(&value))) {
       Attribute attribute = IntegerAttr::get(elementType, value);
       return DenseElementsAttr::get(shapedty, attribute);
     }
   }
-  if (elementType.isa<FloatType>()) {
+  if (isa<FloatType>(elementType)) {
     double value = 0.0;
     if (matchPattern(getFillValue(), m_TorchConstantFloat(&value))) {
       Attribute attribute = FloatAttr::get(elementType, value);
@@ -3939,6 +4139,9 @@ static Attribute getBroadcastedAttr(Attribute attr, ValueTensorType ty) {
 }
 
 OpFoldResult AtenWhereSelfOp::fold(FoldAdaptor adaptor) {
+  if (getSelf() == getOther())
+    return getSelf();
+
   auto dense = dyn_cast_or_null<DenseElementsAttr>(adaptor.getCondition());
   auto resultTy = dyn_cast<ValueTensorType>(getType());
   if (!resultTy || !resultTy.hasDtype() || !resultTy.hasSizes() || !dense ||
@@ -3979,6 +4182,40 @@ OpFoldResult AtenWhereScalarOp::fold(FoldAdaptor adaptor) {
   }
 
   return getBroadcastedAttr(valueAttr, resultTy);
+}
+
+void AtenWhereScalarOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                    MLIRContext *context) {
+
+  patterns.add(+[](AtenWhereScalarOp op, PatternRewriter &rewriter) {
+    auto cond = op.getCondition();
+    auto self = op.getSelf();
+    auto other = op.getOther();
+
+    if (self != other)
+      return rewriter.notifyMatchFailure(op, "differing output");
+
+    auto condTy = dyn_cast<BaseTensorType>(cond.getType());
+    if (!condTy || !condTy.hasSizes())
+      return rewriter.notifyMatchFailure(op, "output size unknown");
+
+    SmallVector<Value> dims;
+    auto torchIntTy = rewriter.getType<Torch::IntType>();
+    for (int i = 0, s = condTy.getSizes().size(); i < s; ++i) {
+      Value iv = rewriter.create<Torch::ConstantIntOp>(
+          op.getLoc(), torchIntTy, rewriter.getI64IntegerAttr(i));
+      dims.push_back(rewriter.create<Torch::AtenSizeIntOp>(
+          op.getLoc(), torchIntTy, cond, iv));
+    }
+
+    Value dimsList = rewriter.create<Torch::PrimListConstructOp>(
+        op.getLoc(), Torch::ListType::get(torchIntTy), dims);
+
+    Value none = rewriter.create<Torch::ConstantNoneOp>(op.getLoc());
+    rewriter.replaceOpWithNewOp<Torch::AtenFullOp>(
+        op, op.getType(), dimsList, self, none, none, none, none);
+    return success();
+  });
 }
 
 //===----------------------------------------------------------------------===//
@@ -4057,6 +4294,9 @@ OpFoldResult PrimNumToTensorScalarOp::fold(FoldAdaptor adaptor) {
     a = IntegerAttr::get(dty, iattr.getInt());
   } else if (auto fattr = dyn_cast<FloatAttr>(a)) {
     a = FloatAttr::get(dty, fattr.getValueAsDouble());
+  } else {
+    // doesn't handle other types, like complex type
+    return {};
   }
 
   auto mlirTensorType =
@@ -4422,15 +4662,14 @@ LogicalResult GlobalSlotModuleInitializerOp::verify() {
   auto initialize = cast<InitializeGlobalSlotsOp>(getBody()->getTerminator());
   for (Attribute symName : initialize.getSlotSymNames()) {
     auto wasInserted = initializedGlobalSlots
-                           .insert(symName.cast<FlatSymbolRefAttr>().getAttr())
+                           .insert(cast<FlatSymbolRefAttr>(symName).getAttr())
                            .second;
     if (!wasInserted)
       return initialize.emitError("duplicate initialization of global slot: ")
              << symName;
   }
   auto lessThanByStringValue = [](Attribute lhs, Attribute rhs) {
-    return lhs.cast<StringAttr>().getValue() <
-           rhs.cast<StringAttr>().getValue();
+    return cast<StringAttr>(lhs).getValue() < cast<StringAttr>(rhs).getValue();
   };
   auto known = llvm::to_vector(knownGlobalSlots);
   llvm::sort(known, lessThanByStringValue);
@@ -4443,7 +4682,7 @@ LogicalResult GlobalSlotModuleInitializerOp::verify() {
     InFlightDiagnostic diag = initialize.emitOpError(
         "must have one initializer for each global slot in the module");
     for (auto knownGlobalSlot : known) {
-      auto symName = FlatSymbolRefAttr::get(knownGlobalSlot.cast<StringAttr>());
+      auto symName = FlatSymbolRefAttr::get(cast<StringAttr>(knownGlobalSlot));
       if (!initializedGlobalSlots.count(knownGlobalSlot)) {
         diag.attachNote(
                 symbolTable.lookup<GlobalSlotOp>(symName.getAttr()).getLoc())
@@ -4454,7 +4693,7 @@ LogicalResult GlobalSlotModuleInitializerOp::verify() {
       if (!knownGlobalSlots.count(initializedGlobalSlot)) {
         diag.attachNote().append(
             "unexpected global slot initializer for non-existent global slot ",
-            FlatSymbolRefAttr::get(initializedGlobalSlot.cast<StringAttr>()));
+            FlatSymbolRefAttr::get(cast<StringAttr>(initializedGlobalSlot)));
       }
     }
     return diag;

@@ -27,6 +27,7 @@ from typing import (
     Tuple,
     TYPE_CHECKING,
     Union,
+    Iterable,
 )
 import weakref
 
@@ -44,6 +45,7 @@ from torch import (
 
 from torch._ops import (
     OpOverload as TorchOpOverload,
+    HigherOrderOperator,
 )
 
 from torch._subclasses import (
@@ -327,7 +329,7 @@ def sparsity_encoding(shape: torch.Size, sparsity: SparsityMeta) -> str:
         )
 
     if batch_dim > 0:
-        batch = ",".join(f"d{d}:dense" for d in range(batch_dim))
+        batch = ",".join(f"d{d}:batch" for d in range(batch_dim))
         lvls = f"{batch},{lvls}"
 
     if dense_dim > 0:
@@ -353,19 +355,12 @@ def is_builtin_function_or_method(obj: Any) -> bool:
 class InputInfo:
     """Provides additional metadata when resolving inputs."""
 
-    __slots__ = [
-        "program",
-        "input_spec",
-        "node",
-        "ir_type",
-        "mutable_producer_node_name",
-    ]
-
     program: torch.export.ExportedProgram
     input_spec: TypingInputSpec
     node: Node
     ir_type: IrType
-    mutable_producer_node_name: Optional[str]
+    mutable_producer_node_name: Optional[str] = None
+    store_producer_node: Optional[str] = None
 
 
 class FxImporterHooks:
@@ -393,6 +388,22 @@ class FxImporterHooks:
         the default.
         """
         return None
+
+    def store_produced_value(
+        self,
+        gni: "GraphNodeImporter",
+        py_value: Any,
+        produced_ir_value: Any,
+        info: InputInfo,
+    ):
+        """Given a load/store semantic mutatation, issues the store.
+
+        This style is used for buffer and parameter updates, which are assumed to be
+        non-SSA updates that are otherwise in the value-tensor domain.
+        """
+        raise NotImplementedError(
+            f"Store of a mutation to {info} is not supported (from {produced_ir_value})"
+        )
 
 
 class FxImporter:
@@ -603,7 +614,11 @@ class FxImporter:
             elif input_spec.kind == InputKind.BUFFER and isinstance(
                 arg, TensorArgument
             ):
-                # Remember buffer binding.
+                # Remember buffer binding. Unlike user input mutations, buffers
+                # are assumed to be represented with load/store semantics based
+                # on a symbolic or other non-SSA association. As such, they
+                # are not modeled with mutable IR but will trigger an output
+                # store hook when the final value is produced.
                 value = prog.state_dict.get(input_spec.target)
                 assert (
                     not input_spec.persistent or value is not None
@@ -612,9 +627,7 @@ class FxImporter:
                 mutable_producer_node_name = mutable_buffer_target_producers.get(
                     input_spec.target
                 )
-                node_ir_type = self._cc.node_val_to_type(
-                    node, mutable=bool(mutable_producer_node_name)
-                )
+                node_ir_type = self._cc.node_val_to_type(node, mutable=False)
                 buffer_bindings[node] = (
                     value,
                     InputInfo(
@@ -622,7 +635,7 @@ class FxImporter:
                         input_spec,
                         node=node,
                         ir_type=node_ir_type,
-                        mutable_producer_node_name=mutable_producer_node_name,
+                        store_producer_node=mutable_producer_node_name,
                     ),
                 )
             else:
@@ -914,38 +927,52 @@ class ContextCache:
             tensor_meta = node.meta.get("tensor_meta")
             val = node.meta.get("val")
             sparsity = node.meta.get("sparsity", None)
-            if tensor_meta is not None:
-                assert isinstance(tensor_meta, TensorMetadata)
-                # Quantized tensor meta data is not preserved in our lowering,
-                # so throw error instead of silently doing wrong thing.
-                if tensor_meta.is_quantized:
-                    raise NotImplementedError(
-                        f"Quantized tensor meta data is not supported."
-                    )
-                else:
-                    return self.tensor_metadata_to_type(
-                        tensor_meta, sparsity=sparsity, mutable=mutable
-                    )
-            elif val is not None:
-                # some nodes with symbolic inputs pass a 'val' attribute rather than
-                # tensor_meta
-                if isinstance(val, TorchFakeTensor):
-                    return self.get_vtensor_type(
-                        val.size(), val.dtype, sparsity=sparsity, mutable=mutable
-                    )
-
-                t = SCALAR_TYPE_TO_TORCH_MLIR_TYPE.get(type(val))
-                if t is not None:
-                    return IrType.parse(t, self._c)
-
-            raise NotImplementedError(
-                f"FIXME: Unsupported placeholder node (this often indicates that a necessary) "
-                f"fx preprocessing pass was not run): {node.meta}"
-            )
         except KeyError as e:
             raise RuntimeError(
                 f"FIXME: Illegal access to torch.fx.Node.meta: {e} ({node.meta.keys()} : {node.meta})"
             )
+        return self.value_info_to_type(
+            val, tensor_meta=tensor_meta, sparsity=sparsity, mutable=mutable
+        )
+
+    def value_info_to_type(
+        self,
+        val,
+        *,
+        tensor_meta: Optional[TensorMetadata] = None,
+        sparsity=None,
+        mutable: bool = False,
+    ):
+        if tensor_meta is not None:
+            assert isinstance(tensor_meta, TensorMetadata)
+            # Quantized tensor meta data is not preserved in our lowering,
+            # so throw error instead of silently doing wrong thing.
+            if tensor_meta.is_quantized:
+                raise NotImplementedError(
+                    f"Quantized tensor meta data is not supported."
+                )
+            else:
+                return self.tensor_metadata_to_type(
+                    tensor_meta, sparsity=sparsity, mutable=mutable
+                )
+        elif val is not None:
+            # some nodes with symbolic inputs pass a 'val' attribute rather than
+            # tensor_meta
+            if isinstance(val, TorchFakeTensor):
+                return self.get_vtensor_type(
+                    val.size(), val.dtype, sparsity=sparsity, mutable=mutable
+                )
+
+        # Note that None is a valid scalar here, so it is important that this
+        # is always checked as the last fallback.
+        t = SCALAR_TYPE_TO_TORCH_MLIR_TYPE.get(type(val))
+        if t is not None:
+            return IrType.parse(t, self._c)
+
+        raise NotImplementedError(
+            f"Could not deduce type from value info: "
+            f"tensor_meta={tensor_meta}, val={val} {type(val)}, sparsity={sparsity}"
+        )
 
     def tensor_metadata_to_type(
         self,
@@ -1132,17 +1159,17 @@ class GraphNodeImporter:
         self.bind_node_value(node, _on_access)
 
         if info.mutable_producer_node_name is not None:
+            raise NotImplementedError("NYI: Mutable SSA buffer updates")
+
+        if info.store_producer_node is not None:
 
             def on_produced(value: Value):
-                mutable_buffer_value = self.resolve_node_value(node)
                 with loc, InsertionPoint(self._b):
-                    Operation.create(
-                        "torch.overwrite.tensor.contents",
-                        results=[],
-                        operands=[value, mutable_buffer_value],
+                    self.fx_importer._hooks.store_produced_value(
+                        self, buffer_value, value, info
                     )
 
-            self._on_node_produced[info.mutable_producer_node_name] = on_produced
+            self._on_node_produced[info.store_producer_node] = on_produced
 
     def return_node_values(self, loc, nodes: List[Node]):
         with loc, InsertionPoint(self._b):
@@ -1150,7 +1177,7 @@ class GraphNodeImporter:
             func_dialect.ReturnOp(operands, loc=loc)
 
     def import_nodes(
-        self, nodes: Sequence[Node], *, skip_placeholders_outputs: bool = False
+        self, nodes: Iterable[Node], *, skip_placeholders_outputs: bool = False
     ):
         with InsertionPoint(self._b):
             loc = Location.unknown()
@@ -1201,6 +1228,8 @@ class GraphNodeImporter:
                     elif isinstance(target, TorchOpOverload):
                         # Dispatch to an ATen op.
                         self._import_torch_op_overload(loc, node, target)
+                    elif isinstance(target, HigherOrderOperator):
+                        self._import_hop(loc, node, target)
                     else:
                         raise NotImplementedError(
                             f"FIX ME: Unimplemented call_function: target={node.target}, {node.meta}"
@@ -1241,7 +1270,7 @@ class GraphNodeImporter:
                 (arg.meta["val"].node.pytype if isinstance(arg, Node) else type(arg))
                 for arg in node.args
             ]
-            is_int = [item == int for item in arg_types]
+            is_int = [item is int for item in arg_types]
             if all(is_int):
                 op_overload = "int"
             elif any(is_int):
@@ -1293,9 +1322,82 @@ class GraphNodeImporter:
         ), f"Unable to parse symbolic operation: {target} with args {node.args}"
         self._import_torch_op_overload(loc, node, concrete_target)
 
+    def _import_hop(self, loc: Location, node: torch_fx.Node, hop: HigherOrderOperator):
+        # Imports a higher-order operator.
+        # See: https://dev-discuss.pytorch.org/t/higher-order-operators-2023-10/1565
+        assert hop.namespace == "higher_order"
+        hop_name = hop.name()
+        handler_name = f"_import_hop_{hop_name}"
+        handler = getattr(self, handler_name, None)
+        if handler is None:
+            raise NotImplementedError(
+                f"Higher-order operation '{hop_name}' not "
+                f"implemented in the FxImporter "
+                f"(tried '{handler_name}')"
+            )
+        handler(loc, node, hop)
+
+    def _import_hop_auto_functionalized(
+        self, loc: Location, node: torch_fx.Node, hop: HigherOrderOperator
+    ):
+        # Imports the torch._higher_order_ops.auto_functionalize.auto_functionalized HOP.
+        # This op wraps a target OpOverload with args/kwargs dispatched to it.
+        # Even thought the OpOverload will return None, this returns the
+        # arguments mutated. Note that the general op overload importing can't
+        # be used here as they use a special encoding for everything.
+        # See: torch/_higher_order_ops/auto_functionalize.py
+        (op_overload,) = node.args
+        schema = op_overload._schema
+        assert isinstance(schema, FunctionSchema)
+        mlir_op_name = _get_mlir_op_name_for_schema(schema)
+
+        # Functionalization transforms the results to (*actual, *aliased).
+        # If the schema is actually zero return, then the first "val"
+        # type will be None and we need to bind that as a result of the node.
+        # However, that doesn't make it into the IR. This special casing is
+        # annoying.
+        node_result_types = [
+            (None if v is None else self._cc.tensor_metadata_to_type(v))
+            for v in node.meta["val"]
+        ]
+
+        if len(schema.returns) == 0:
+            assert node_result_types[0] is None
+            ir_result_types = node_result_types[1:]
+            bind_none = 1
+        else:
+            ir_result_types = node_result_types
+            bind_none = 0
+
+        # The auto_functionalized ops maps all arguments by name (as opposed
+        # to mixed for generic OpOverload). Linearize them.
+        operands = []
+        for parameter in schema.arguments:
+            operand = self._import_argument(
+                loc, node.kwargs[parameter.name], parameter.type
+            )
+            operands.append(operand)
+
+        operation = _emit_operation(
+            mlir_op_name,
+            result_types=ir_result_types,
+            operands=operands,
+            loc=loc,
+        )
+
+        # Special case: if declared_result_types was empty, then we bind a
+        # None for future node access.
+        self._multi_result_nodes.add(node)
+        if bind_none:
+            self.bind_node_value(node, None, 0)
+        # Record value mappings for remainder.
+        for i, value in enumerate(operation.results):
+            self.bind_node_value(node, value, i + bind_none)
+
     def _import_torch_op_overload(
         self, loc: Location, node: torch_fx.Node, target: TorchOpOverload
     ):
+        # TODO: Convert this cascade of ifs to a table-driven
         # replace lift_fresh_copy with clone op
         if target == torch.ops.aten.lift_fresh_copy.default:
             node.target = target = torch.ops.aten.clone.default
@@ -1319,16 +1421,20 @@ class GraphNodeImporter:
                 for key_node in node.users:
                     if key_node.target == torch.ops.aten.baddbmm.default:
                         node.target = target = torch.ops.aten.zeros.default
+        elif target == torch.ops.aten._local_scalar_dense.default:
+            input_type = node.args[0].meta["tensor_meta"].dtype
+            if input_type.is_floating_point:
+                node.target = target = torch.ops.aten.Float.Tensor
+            else:
+                node.target = target = torch.ops.aten.Int.Tensor
+            node.args = (node.args[0],)
+        elif target == torch.ops.aten._assert_async.msg:
+            # TODO: A more suitable op to replace it?
+            return
 
         schema = target._schema
         assert isinstance(schema, FunctionSchema)
-
-        # Map to a `torch` dialect name.
-        namespace, sep, unqualified_name = schema.name.partition("::")
-        assert sep, f"Malformed Torch op name {schema.name}"
-        mlir_op_name = f"torch.{namespace}.{unqualified_name}"
-        if schema.overload_name != "":
-            mlir_op_name += f".{schema.overload_name}"
+        mlir_op_name = _get_mlir_op_name_for_schema(schema)
 
         # Intervening to use Scalar ops due to incorrect ops from AOT-autograd with scalar arguments.
         if mlir_op_name in TENSOR_SCALAR_OP_CONVERTER and (
@@ -1347,40 +1453,23 @@ class GraphNodeImporter:
                 op_overload = getattr(op_overload, op_attrs[i])
             schema = op_overload._schema
 
-        return_count = len(schema.returns)
-        if return_count == 1:
-            # Unary return directly maps a single meta["val"] and cannot be subscripted.
-            # if "tensor_meta" is None, this will throw unsupported placeholder node error
-            result_types = [self._cc.node_val_to_type(node)]
-        elif return_count == 0:
-            # Some torch ops do have 0 returns, and these are supported with ZeroResults
-            # op trait. Python bindings for IR creation allow us to pass empty result_types
-            # for such ops. Therefore, we pass an empty result types for these cases.
-            result_types = []
-        else:
-            # Multi-return will unpack the meta["val"] and trigger our getitem subscripting
-            # short-circuit above. Note that if we ever choose to also fully reify Python
-            # level result tuples, we will need to create a tuple-boxed version of this and
-            # redirect to it for generic object access.
-
-            result_types = []
-            for v in node.meta["val"]:
-                result_types.append(self._cc.tensor_metadata_to_type(v))
-            result_types = tuple(result_types)
-
+        # Convert result types.
+        result_types = self._unpack_node_result_types(node, schema)
+        if len(result_types) > 1:
             self._multi_result_nodes.add(node)
+
         # Unroll operands from formal parameters, args and kwargs.
         operands = []
         for i, parameter in enumerate(schema.arguments):
-            if parameter.kwarg_only and parameter.name in node.kwargs:
+            if i < len(node.args):
+                operands.append(
+                    self._import_argument(loc, node.args[i], parameter.type)
+                )
+            elif parameter.name in node.kwargs:
                 operands.append(
                     self._import_argument(
                         loc, node.kwargs[parameter.name], parameter.type
                     )
-                )
-            elif i < len(node.args):
-                operands.append(
-                    self._import_argument(loc, node.args[i], parameter.type)
                 )
             else:
                 operands.append(
@@ -1389,24 +1478,9 @@ class GraphNodeImporter:
                     )
                 )
 
-        # Support unregistered torch ops using torch.operator.
-        # torch.operator is used to represent ops from registry
-        # which haven't been generated by torch_ods_gen.py.
-        if not self._c.is_registered_operation(mlir_op_name):
-            operation = Operation.create(
-                "torch.operator",
-                attributes={"name": StringAttr.get(mlir_op_name)},
-                results=result_types,
-                operands=operands,
-                loc=loc,
-            )
-        else:
-            operation = Operation.create(
-                mlir_op_name,
-                results=result_types,
-                operands=operands,
-                loc=loc,
-            )
+        operation = _emit_operation(
+            mlir_op_name, result_types=result_types, operands=operands, loc=loc
+        )
 
         # Record value mapping.
         for i, value in enumerate(operation.results):
@@ -1432,17 +1506,41 @@ class GraphNodeImporter:
                 with loc:
                     self.bind_node_value(arg, self._import_literal(obj))
 
-            return self.resolve_node_value(arg)
+            argument_value = self.resolve_node_value(arg)
         elif isinstance(arg, torch_fx.immutable_collections.immutable_list):
-            return self._import_list_argument(loc, arg, expected_jit_type)
+            argument_value = self._import_list_argument(loc, arg, expected_jit_type)
         elif isinstance(expected_jit_type, torch.TensorType) and not isinstance(
             arg, torch.Tensor
         ):
             # promote scalars to tensor types as appropriate
-            return self._import_scalar_as_tensor(loc, arg)
+            argument_value = self._import_scalar_as_tensor(loc, arg)
         else:
             with loc:
-                return self._import_literal(arg)
+                argument_value = self._import_literal(arg)
+        return self._convert_type(loc, argument_value, expected_jit_type)
+
+    def _convert_type(self, loc: Location, val: Value, expected_jit_type):
+        """
+        When the type of 'value' and the type in the schema do not match,
+        attempt to perform automatic type conversion.
+
+        example: test/python/fx_importer/basic_test.py::test_full
+        """
+        op_name = None
+        result_type = None
+        # TODO: If additional types require conversion in the future,
+        #  consider implementing a table-driven approach.
+        if val.type == self._cc.torch_bool_type:
+            if isinstance(expected_jit_type, torch.FloatType):
+                op_name = "torch.aten.Float.bool"
+                result_type = self._cc.torch_float_type
+            elif isinstance(expected_jit_type, (torch.IntType, torch.NumberType)):
+                op_name = "torch.aten.Int.bool"
+                result_type = self._cc.torch_int_type
+        if op_name is None:
+            return val
+        with loc:
+            return Operation.create(name=op_name, results=[result_type], operands=[val]).result
 
     def _import_literal(self, py_value: Any) -> Value:
         # Apply the conversion callback.
@@ -1487,7 +1585,7 @@ class GraphNodeImporter:
         ).result
 
     def _import_list_argument(
-        self, loc: Location, arg: NodeArgument, expected_jit_type
+        self, loc: Location, arg: Sequence[NodeArgument], expected_jit_type
     ) -> Value:
         assert (
             isinstance(expected_jit_type, torch.ListType)
@@ -1495,7 +1593,7 @@ class GraphNodeImporter:
                 isinstance(expected_jit_type, torch.OptionalType)
                 and isinstance(expected_jit_type.getElementType(), torch.ListType)
             )
-            or isinstance(expected_jit_type, NoneType)
+            or (expected_jit_type is None)
         ), f"Unexpected jit type as list argument: {arg} of type {expected_jit_type}"
 
         # parse list type
@@ -1570,6 +1668,29 @@ class GraphNodeImporter:
             raise RuntimeError(f"Unhandled default value ({arg.__class__}): {arg})")
         with loc:
             return cvt(arg, self, self._cc)
+
+    def _unpack_node_result_types(
+        self, node: torch.fx.Node, schema: FunctionSchema
+    ) -> List[IrType]:
+        return_count = len(schema.returns)
+        if return_count == 1:
+            # Unary return directly maps a single meta["val"] and cannot be subscripted.
+            # if "tensor_meta" is None, this will throw unsupported placeholder node error
+            result_types = [self._cc.node_val_to_type(node)]
+        elif return_count == 0:
+            # Some torch ops do have 0 returns, and these are supported with ZeroResults
+            # op trait. Python bindings for IR creation allow us to pass empty result_types
+            # for such ops. Therefore, we pass an empty result types for these cases.
+            result_types = []
+        else:
+            # Multi-return will unpack the meta["val"] and trigger our getitem subscripting
+            # short-circuit above. Note that if we ever choose to also fully reify Python
+            # level result tuples, we will need to create a tuple-boxed version of this and
+            # redirect to it for generic object access.
+            result_types = []
+            for v in node.meta["val"]:
+                result_types.append(self._cc.value_info_to_type(v))
+        return result_types
 
 
 def _make_constant_op(
@@ -1684,6 +1805,47 @@ class TypeSubclassMap:
         else:
             self._cache[t] = None
             return None
+
+
+###############################################################################
+# Utilities
+###############################################################################
+
+
+def _get_mlir_op_name_for_schema(schema: FunctionSchema) -> str:
+    # Returns a fully-qualified MLIR operation name (i.e. 'torch.foobar')
+    # for a function schema.
+    namespace, sep, unqualified_name = schema.name.partition("::")
+    assert sep, f"Malformed Torch op name {schema.name}"
+    mlir_op_name = f"torch.{namespace}.{unqualified_name}"
+    if schema.overload_name != "":
+        mlir_op_name += f".{schema.overload_name}"
+    return mlir_op_name
+
+
+def _emit_operation(
+    mlir_op_name: str, result_types: List[IrType], operands: List[Value], loc: Location
+) -> Operation:
+    # Support unregistered torch ops using torch.operator.
+    # torch.operator is used to represent ops from registry
+    # which haven't been generated by torch_ods_gen.py.
+    context = loc.context
+    if not context.is_registered_operation(mlir_op_name):
+        operation = Operation.create(
+            "torch.operator",
+            attributes={"name": StringAttr.get(mlir_op_name)},
+            results=result_types,
+            operands=operands,
+            loc=loc,
+        )
+    else:
+        operation = Operation.create(
+            mlir_op_name,
+            results=result_types,
+            operands=operands,
+            loc=loc,
+        )
+    return operation
 
 
 ###############################################################################

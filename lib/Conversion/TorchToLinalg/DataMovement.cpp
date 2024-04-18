@@ -28,6 +28,7 @@
 #include "torch-mlir/Dialect/Torch/IR/TorchOps.h"
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
+#include "llvm/ADT/APInt.h"
 
 #include <numeric>
 
@@ -766,6 +767,8 @@ public:
       return failure();
     int64_t xTotalSize = xDims[0];
     int64_t yTotalSize = yDims[0];
+    if (xTotalSize == kUnknownSize || yTotalSize == kUnknownSize)
+      return failure();
     SmallVector<int64_t> xIndicesResult({0});
     SmallVector<int64_t> yIndicesResult({0});
     size_t nextXIndex = 1;
@@ -780,6 +783,81 @@ public:
         if (nextYIndex == yDims.size() || yDims[nextYIndex] == kUnknownSize)
           return failure();
         yTotalSize *= yDims[nextYIndex];
+        yIndicesResult.push_back(nextYIndex++);
+      }
+    }
+
+    xIndices.assign(std::move(xIndicesResult));
+    yIndices.assign(std::move(yIndicesResult));
+    return success();
+  }
+
+  // Starting from the beginning of the dims arrays, this helper finds the
+  // smallest set of consecutive dims in each array that satisfies one of
+  // the following conditions.
+  // 1. The product of the static dim sizes in the two subsets is equal.
+  // 2. The product of the dim size multiplied by the multiplier for the unknown
+  // one in both subsets is equal.
+  // The indices arrays are populated with the indices of the dims arrays that
+  // correspond to the subsets found.
+  //
+  // An error is returned if two subsets of dims with total number of elements
+  // equal to each other is not found.
+  static LogicalResult mapParallelUnknownDims(ArrayRef<int64_t> xDims,
+                                              ArrayRef<int64_t> yDims,
+                                              SmallVector<int64_t> &xIndices,
+                                              SmallVector<int64_t> &yIndices,
+                                              int64_t xMultiplier,
+                                              int64_t yMultiplier) {
+    if (xDims.empty() || yDims.empty())
+      return failure();
+    if (llvm::count(xDims, kUnknownSize) > 1 ||
+        llvm::count(yDims, kUnknownSize) > 1)
+      return failure();
+
+    int64_t xTotalSize = xDims[0];
+    int64_t yTotalSize = yDims[0];
+    SmallVector<int64_t> xIndicesResult({0});
+    SmallVector<int64_t> yIndicesResult({0});
+    size_t nextXIndex = 1;
+    size_t nextYIndex = 1;
+    bool xHasUnknownSize = false;
+    bool yHasUnknownSize = false;
+    if (xTotalSize == kUnknownSize) {
+      xHasUnknownSize = true;
+      xTotalSize = xMultiplier;
+    }
+    if (yTotalSize == kUnknownSize) {
+      yHasUnknownSize = true;
+      yTotalSize = yMultiplier;
+    }
+
+    while (xTotalSize != yTotalSize || xHasUnknownSize != yHasUnknownSize) {
+      if ((!xHasUnknownSize && yHasUnknownSize) || xTotalSize < yTotalSize) {
+        if (nextXIndex == xDims.size())
+          return failure();
+        if (xDims[nextXIndex] == kUnknownSize) {
+          // No support for more than one unknown dim.
+          if (xHasUnknownSize)
+            return failure();
+          xTotalSize *= xMultiplier;
+          xHasUnknownSize = true;
+        } else {
+          xTotalSize *= xDims[nextXIndex];
+        }
+        xIndicesResult.push_back(nextXIndex++);
+      } else {
+        if (nextYIndex == yDims.size())
+          return failure();
+        if (yDims[nextYIndex] == kUnknownSize) {
+          // No support for more than one unknown dim.
+          if (yHasUnknownSize)
+            return failure();
+          yTotalSize *= yMultiplier;
+          yHasUnknownSize = true;
+        } else {
+          yTotalSize *= yDims[nextYIndex];
+        }
         yIndicesResult.push_back(nextYIndex++);
       }
     }
@@ -844,6 +922,21 @@ public:
     return std::make_pair(inputShape, outputShape);
   }
 
+  // Gets the ratio between the unknown dimensions in the input shape and the
+  // output shape. This ratio is used to match parallel unknown dimensions.
+  static std::pair<int64_t, int64_t>
+  getMultiplier(SmallVector<int64_t> inputShape,
+                SmallVector<int64_t> outputShape) {
+    int64_t totalInputElements = std::abs(productReduce(inputShape));
+    int64_t totalOutputElements = std::abs(productReduce(outputShape));
+    APInt GCD = llvm::APIntOps::GreatestCommonDivisor(
+        APInt(64, totalInputElements), APInt(64, totalOutputElements));
+    int64_t gcd = *(GCD.getRawData());
+    int64_t inputMultiplier = totalOutputElements / gcd;
+    int64_t outputMultiplier = totalInputElements / gcd;
+    return std::make_pair(inputMultiplier, outputMultiplier);
+  }
+
   LogicalResult
   matchAndRewrite(AtenViewOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -852,7 +945,6 @@ public:
     Location loc = op.getLoc();
     Value input = adaptor.getSelf();
     auto inputType = input.getType().cast<RankedTensorType>();
-    SmallVector<Value> inputSize = getTensorSizes(rewriter, loc, input);
     int64_t inputRank = inputType.getRank();
     const TypeConverter *typeConverter = getTypeConverter();
     auto resultType =
@@ -893,12 +985,6 @@ public:
       return rewriter.notifyMatchFailure(
           op, "at most one element in size list is allowed to be -1");
     }
-    SmallVector<Value> outputSizeInt = getTypeConvertedValues(
-        rewriter, loc, typeConverter, outputSizeTorchInt);
-    if (resultRank != (int64_t)outputSizeInt.size()) {
-      return rewriter.notifyMatchFailure(
-          op, "desired size list length mismatches with the result type rank");
-    }
 
     auto [inputShape, outputShape] =
         getInputAndOutputShape(op.getSelf(), outputSizeTorchInt);
@@ -923,6 +1009,10 @@ public:
         inputHasOneDynDim && outputHasOneDynDim &&
         productReduce(inputShape) == productReduce(outputShape);
     SmallVector<std::pair<int64_t, int64_t>> unchangedDims;
+
+    auto [inputMultiplier, outputMultiplier] =
+        getMultiplier(inputShape, outputShape);
+
     for (auto [outputDim, outputDimSize] :
          llvm::enumerate(outputSizeTorchInt)) {
       int64_t inputDim;
@@ -975,6 +1065,7 @@ public:
     // For more information, see description of helper functions used in the
     // `if-else` cases inside the while loop.
     int64_t inputDim = 0, outputDim = 0;
+    SmallVector<std::pair<int64_t, int64_t>> checkDimPairs;
     for (auto [nextUnchangedInput, nextUnchangedOutput] : unchangedDims) {
       // Used for ensuring that we don't have an ambiguous expansion
       bool assumedDynamicDimNotSplit = false;
@@ -1020,12 +1111,21 @@ public:
           /// `mapStaticallyKnownDims` maps the smallest number of
           /// input and output dimensions in the slice statically
           /// known to have the same number of elements.
+        } else if (succeeded(mapParallelUnknownDims(
+                       inputShapeSlice, outputShapeSlice, inputSliceIndices,
+                       outputSliceIndices, inputMultiplier,
+                       outputMultiplier))) {
+          /// `mapParallelUnknownDims` maps the smallest number of
+          /// input and output dimensions in the slice statically known
+          /// or parallel unknown to have the same number of elements.
+          assumedDynamicDimNotSplit = true;
         } else if (inputShapeSlice[0] == kUnknownSize) {
-          // If the input is dynamic, assume it is not split
-          checkDimEqualHelper(rewriter, loc, inputSize[inputDim],
-                              outputSizeInt[outputDim]);
-          // If output dimension is not dynamic, improve static information of
-          // input
+          // Defer the dynamic shape check to avoid DialectConversion assertion:
+          if (outputShapeSlice[0] != kUnknownSize) {
+            checkDimPairs.push_back(
+                std::pair<int64_t, int64_t>(inputDim, outputDim));
+          }
+
           inputShape[inputDim] = outputShape[outputDim];
           inputSliceIndices.push_back(0);
           outputSliceIndices.push_back(0);
@@ -1071,6 +1171,20 @@ public:
         }
         outputAssociations.back().push_back(outputDim++);
       }
+    }
+
+    SmallVector<Value> inputSize = getTensorSizes(rewriter, loc, input);
+
+    SmallVector<Value> outputSizeInt = getTypeConvertedValues(
+        rewriter, loc, typeConverter, outputSizeTorchInt);
+    if (resultRank != (int64_t)outputSizeInt.size()) {
+      return rewriter.notifyMatchFailure(
+          op, "desired size list length mismatches with the result type rank");
+    }
+
+    for (auto [inputDim, outputDim] : checkDimPairs) {
+      checkDimEqualHelper(rewriter, loc, inputSize[inputDim],
+                          outputSizeInt[outputDim]);
     }
 
     auto cast = [&](Location loc, Type t, Value v) -> Value {
@@ -1166,18 +1280,26 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
       return failure();
-    Location loc = op.getLoc();
     Value input = adaptor.getSelf();
     auto inputType = input.getType().cast<RankedTensorType>();
+    auto inputShape = inputType.getShape();
     int64_t inputRank = inputType.getRank();
+
     const TypeConverter *typeConverter = getTypeConverter();
     auto resultType =
         typeConverter->convertType(op.getType()).cast<RankedTensorType>();
+    auto resultShape = resultType.getShape();
     int64_t resultRank = resultType.getRank();
 
     if (inputRank == 0) {
       return rewriter.notifyMatchFailure(
           op, "zero input rank should have been handled by the folder");
+    }
+
+    // No change in rank so we just cast to the output type:
+    if (inputRank == resultRank) {
+      rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, input);
+      return success();
     }
 
     // In case the operand tensor type is statically shaped with all dimensions
@@ -1189,63 +1311,31 @@ public:
       return success();
     }
 
-    // All the static size-1 dimensions at the beginning(going from higher to
-    // lower dimensions) will be collapsed into the first dynamic or first non
-    // size-1 static dimension. All the other static size-1 dimensions will be
-    // collapsed into its previous dynamic or non size-1 static dimension.
     SmallVector<ReassociationIndices> reassociation(resultRank);
-    bool isSqueezed = false;
-    int64_t headOnesCount = 0;
-    while (headOnesCount < inputRank &&
-           inputType.getDimSize(headOnesCount) == 1) {
-      isSqueezed = true;
-      reassociation[0].push_back(headOnesCount++);
-    }
+    // First dimensions are guaranteed to match to eachother:
+    int64_t i = 0;
+    int64_t j = 0;
 
-    Value one = rewriter.create<arith::ConstantOp>(
-        loc, rewriter.getIntegerAttr(rewriter.getIndexType(), 1));
-    int64_t j = -1;
-    bool elideDynamicBroadcastDimCheck =
-        isAssumingStrictSymbolicShapes(rewriter);
-    for (auto i : llvm::seq<int64_t>(headOnesCount, inputRank)) {
-      if (inputType.isDynamicDim(i)) {
-        if (!elideDynamicBroadcastDimCheck) {
-          // Make sure that size-1 dynamic dimension does not exist.
-          Value dimSize = getDimOp(rewriter, loc, input, i);
-          Value dimSizeNotOne = rewriter.create<arith::CmpIOp>(
-              loc, arith::CmpIPredicate::ne, dimSize, one);
-          rewriter.create<cf::AssertOp>(
-              loc, dimSizeNotOne,
-              rewriter.getStringAttr(
-                  "unimplemented: size 1 dynamic dimension is not supported"));
-        }
-        ++j;
-      } else if (inputType.getDimSize(i) != 1) {
-        ++j;
-      } else {
-        // `isSqueezed` checks if the operand tensor type contains at least one
-        // unit dimension.
-        isSqueezed = true;
-      }
-      if (j == resultRank)
-        break;
+    for (i = 0; i < inputRank && j < resultRank; i++) {
       reassociation[j].push_back(i);
+      j = inputShape[i] == resultShape[j] ? j + 1 : j;
     }
 
-    // Make sure that result type rank is compatible with the squeezed size.
-    if (j != resultRank - 1)
+    // Squeeze in the remaining 1s:
+    for (; i < inputRank; ++i) {
+      if (inputShape[i] != 1)
+        return rewriter.notifyMatchFailure(op,
+                                           "non-unary dim cannot be squeezed");
+      reassociation.back().push_back(i);
+    }
+
+    // Make sure that result type rank is compatible with the squeezed size:
+    if (j != resultRank)
       return rewriter.notifyMatchFailure(
           op, "expected output size mismatches with the result type rank");
 
-    if (isSqueezed) {
-      rewriter.replaceOpWithNewOp<tensor::CollapseShapeOp>(
-          op, resultType, input, reassociation);
-
-    } else {
-      // If the operand tensor type does not have any unit dimension,
-      // `aten.squeeze` will behave as an identity operation.
-      rewriter.replaceOpWithNewOp<tensor::CastOp>(op, resultType, input);
-    }
+    rewriter.replaceOpWithNewOp<tensor::CollapseShapeOp>(op, resultType, input,
+                                                         reassociation);
     return success();
   }
 };
@@ -1898,7 +1988,7 @@ public:
 
     RankedTensorType inputType = input.getType().cast<RankedTensorType>();
     auto inputElementType = getElementTypeOrSelf(input.getType());
-    if (!inputElementType.isa<ComplexType>()) {
+    if (!isa<ComplexType>(inputElementType)) {
       return op.emitError("only ComplexType is allowed as input type");
     }
     Type elementType = resultType.getElementType();

@@ -70,6 +70,7 @@ void TorchConversion::createTorchBackendToLinalgOnTensorsBackendPipeline(
     OpPassManager &pm) {
   // We want to fuse quantized operations together before lowering to linalg.
   pm.addNestedPass<func::FuncOp>(Torch::createFuseQuantizedOpsPass());
+  pm.addNestedPass<func::FuncOp>(Torch::createScalarizeShapesPass());
 
   // Lower to linalg + guards which is the input to codegen backends.
   // We do this first as it tends to involve pattern-matching against constants,
@@ -141,8 +142,6 @@ void TorchConversion::createTorchBackendToStablehloBackendPipeline(
   // Lowering Chlo ops to Stablehlo
   pm.addNestedPass<func::FuncOp>(
       stablehlo::createChloLegalizeToStablehloPass());
-  pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
-
   // Lowering remained ops to Arith
   pm.addNestedPass<func::FuncOp>(createConvertTorchToArithPass());
 
@@ -158,7 +157,17 @@ void TorchConversion::createTorchBackendToStablehloBackendPipeline(
   pm.addNestedPass<func::FuncOp>(
       TorchConversion::createFinalizingBackendTypeConversionPass());
 
-  // Verify that we have lowered to Stablehlo and Chlo ops.
+  // Verify that we have lowered to Stablehlo ops.
   pm.addPass(TorchConversion::createVerifyStablehloBackendContractPass());
+
+  // Canonicalize Stablehlo dynamic ops to static ops
+  pm.addNestedPass<func::FuncOp>(
+      stablehlo::createStablehloCanonicalizeDynamismPass());
+  pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+  pm.addPass(stablehlo::createStablehloRefineShapesPass());
+  pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
+  pm.addNestedPass<func::FuncOp>(
+      stablehlo::createStablehloCanonicalizeDynamismPass());
+  pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 }
 #endif
