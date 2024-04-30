@@ -16,3 +16,5 @@ args=(
   --filter "Dialect/TMTensor/bufferize.mlir"
 )
 lit "${args[@]}" | tee _demos/lit.run.dirty.mlir
+
+###############################################################################
